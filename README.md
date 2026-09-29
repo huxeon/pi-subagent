@@ -81,10 +81,10 @@ full reference (tool modes, output display, security model, limitations).
 
 ## Agents and models
 
-The bundled agents keep the upstream `model` values (the example pins
-`deepseek/deepseek-flash`). If that model is not configured, edit your copies in
-`~/.pi/agent/agents/*.md` or remove the `model:` line so subagents inherit the
-dispatching session's model. Seeding will not overwrite your edits.
+The bundled agents keep the upstream `model` values (Claude Sonnet/Haiku). If
+those models are not configured, edit your copies in `~/.pi/agent/agents/*.md`
+or remove the `model:` line so subagents inherit the dispatching session's
+model. Seeding will not overwrite your edits.
 
 ## Development
 
