@@ -50,15 +50,27 @@ export class TmuxProcessDriver implements ProcessDriver {
       // Pi 1.5 changes process.title, replacing argv in /proc with just "pi".
       const piTitle = args.filter(Boolean).join(" ") === "pi";
       if (!hasSessionArg && !piTitle) return;
-      const [env, status] = await Promise.all([readFile(`${root}/environ`, "utf8"), readFile(`${root}/stat`, "utf8")]);
+      const status = await readFile(`${root}/stat`, "utf8");
+      const fields = status.slice(status.lastIndexOf(")") + 2).split(" ");
+      if (fields[0] === "Z") return;
+      const env = await readFile(`${root}/environ`, "utf8");
       const variables = env.split("\0");
       if (!variables.includes(`PI_SUBAGENT_RUN_DIR=${paths.runDir}`) ||
           !variables.includes(`PI_SUBAGENT_SESSION_FILE=${paths.sessionFile}`)) return;
-      const fields = status.slice(status.lastIndexOf(")") + 2).split(" ");
-      if (fields[0] === "Z") return;
       return { pid, birth: fields[19]! }; // /proc stat field 22, after pid/comm
     } catch (error) {
       if (["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "")) return;
+      // Linux can deny environ access during exit, after cmdline/stat were read.
+      // Ignore only a positively observed zombie or a now-missing process, never
+      // an opaque live candidate (which must still fail closed).
+      if (["EACCES", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+        try {
+          const status = await readFile(`/proc/${pid}/stat`, "utf8");
+          if (status.slice(status.lastIndexOf(")") + 2).split(" ")[0] === "Z") return;
+        } catch (recheckError) {
+          if (["ENOENT", "ESRCH"].includes((recheckError as NodeJS.ErrnoException).code ?? "")) return;
+        }
+      }
       throw error; // Fail closed when process ownership cannot be established.
     }
   }

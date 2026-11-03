@@ -15,7 +15,10 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test tests/*.test.ts"
+    "test": "node --test tests/*.test.ts",
+    "test:integration": "node --test tests/integration.test.ts",
+    "test:pi-api": "node tests/verify-pi.mjs",
+    "test:pi-production": "node tests/verify-production-pi.mjs"
   },
   "pi": {
     "extensions": ["./index.ts"]

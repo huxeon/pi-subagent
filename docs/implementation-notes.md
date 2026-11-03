@@ -164,3 +164,15 @@ env PI_SUBAGENT_RUN_DIR=<同一个绝对运行目录>
 任务 05 使用初始环境中的原样 `PI_SUBAGENT_RUN_DIR` + `PI_SUBAGENT_SESSION_FILE`，结合当前 UID、Pi 标题/启动 argv、tmux session 环境归属以及内存中的 `/proc/stat` starttime 复核。两个路径变量通过 tmux new-session 环境传入，不持久化 PID 或额外记录。候选身份不可读取时 fail closed；无关同 UID 进程先按公开 cmdline 过滤，避免无关服务拒绝 environ 读取阻塞全部管理。
 
 受控 tmux 进程测试已模拟 `process.title='pi'`，验证重新发现、SIGTERM 后等待异步清理和退出、再清 tmux/socket，以及仅 session 文件恢复不重放。**新生产 driver 与真实 Pi 的完整集成仍未验证**；不把该受控测试当成真实模型/工具停止的验收。当前实现限定 Linux 和 `pi` 标题；其他 OS/重品牌需另行验证。完整 API、失败清理与测试结果见 [任务 05 交接](tasks/handoffs/05.md)。
+
+## 8. 任务 08：生产集成离线验证与退出竞态
+
+新增 `tests/verify-production-pi.mjs`，通过 `PI_PACKAGE_DIR=... npm run test:pi-production` 显式执行。真实 Pi 1.5.0 bundled CLI 加载本项目生产入口，使用生产 ParentManager/TmuxProcessDriver/socket，隔离 HOME/agent-dir/XDG、假认证、offline 和私有 tmux server；从原生 SessionManager 预置的早期 user 历史恢复，**不发 prompt、不请求模型、不 attach 用户终端**。
+
+实测通过：保存的 cwd/openai/gpt-5/high 优先于不同默认配置、idle/null 且不重放；生产子角色无 subagent 工具/人工命令；同入口正常发现 + 显式 -e 不重复 bind、普通扩展和 skill 正常发现；父 manager reload 后同 PID 重连且重复 recover 不重复启动；真实子 `/reload` 后桥重开；SIGTERM 安全停止并保留原 session 字节、恢复空闲、destroy 删除记录与 socket、无活子进程残留。修复后连续三次全部通过。
+
+真实探针发现 `/proc/<test-Pi-PID>/environ` 在退出竞态中返回 EACCES。原驱动并行读 environ/stat，可能在识别 zombie 前抛权限错误。本次修复为先排除已知 zombie；权限错误后复核，仅确认 zombie 或已消失才忽略，身份不透明的活进程仍 fail closed。`tests/process-identity.test.ts` 确定性覆盖三种情况，不放宽归属或自动强杀。
+
+另新增受控多进程 `tests/integration.test.ts` + `fixtures/fake-pi.ts`：生产工具/manager/子入口/socket、原生 JSONL，模拟 Pi 工作事件/回复，覆盖 create→message→等待→settled→destroy、取消/超时不产生迟到结果、断线/异常退出/失败、早停恢复/同名隔离。**模拟不能视为真实模型调度通过**。任务 08 最终全套 75/75 与 typecheck 通过，原 `test:pi-api` 探针重跑通过。
+
+仍未完成真实模型全链路、真实父 Pi 的完整 reload/切换会话接线及人工 TUI 屏幕验收；此前关于这些场景“未验证”的结论仍成立。逐项级别/剩余范围见 [任务 08 交接](tasks/handoffs/08.md)，不要将 manager 调用加真实子 Pi 的验证表述为完整父 Pi/模型/TUI 验收。
