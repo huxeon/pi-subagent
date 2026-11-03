@@ -42,8 +42,17 @@ export function card(p: SubagentInput, details: ToolDetails | undefined, context
       if (width < 1) return [];
       const expanded = context.expanded;
       const hint = context.keyHint("app.tools.expand", "to expand") || "expand to view full content";
-      const title = `subagent ${typeof p.operation === "string" ? p.operation : ""}${typeof p.name === "string" ? ` · ${p.name}` : ""}${p.operation === "message" && p.followUp === true ? " · follow-up" : ""}`;
-      let output = lines(title, width).map(line => theme.fg("toolTitle", line));
+      const operationText = typeof p.operation === "string" ? ` ${safe(p.operation)}` : "";
+      const options: string[] = [];
+      if (p.operation === "message" && p.followUp === true) {
+        options.push("follow-up");
+      } else if (p.operation === "inspect" && p.wait === true) {
+        options.push("wait", `timeout ${p.timeout ?? 1800}s`);
+      }
+      const nameText = typeof p.name === "string" ? ` ${safe(p.name)}` : "";
+      const optionText = options.length ? theme.fg("muted", safe(` (${options.join(", ")})`)) : "";
+      const title = theme.fg("toolTitle", theme.bold("subagent") + operationText) + nameText + optionText;
+      let output = new Text(title, 0, 0).render(width).map(line => truncateToWidth(line, width));
       if ((p.operation === "create" || p.operation === "message") && typeof p.prompt === "string") {
         const prompt = capped(lines(p.prompt, Math.max(1, width - 2)), 3, expanded, Math.max(1, width - 2), hint);
         output = output.concat(prompt.map(line => truncateToWidth(`  ${line}`, width)));
@@ -51,7 +60,6 @@ export function card(p: SubagentInput, details: ToolDetails | undefined, context
       if (p.operation === "create") {
         const cwd = details?.config?.cwd ?? resolve(context.cwd, typeof p.cwd === "string" && !p.cwd.includes("\0") ? p.cwd : ".");
         output = output.concat(lines(`  cwd: ${cwd}`, width));
-        if (expanded && details?.config) output = output.concat(lines(`  provider: ${details.config.provider}\n  model: ${details.config.model}\n  thinking: ${details.config.thinking}`, width));
       }
       output.push("");
       const add = (text: string, color?: "success" | "error" | "warning") => {
@@ -84,13 +92,12 @@ export function card(p: SubagentInput, details: ToolDetails | undefined, context
               add(items.length ? items.map(item => `${item.name}${" ".repeat(Math.max(2, nameWidth - visibleWidth(safe(item.name)) + 2))}${status(item.status)}`).join("\n") : "No subagents.");
             } else {
               const data = details.data as InspectResult | undefined;
-              add(data?.state ?? "Status unavailable.");
+              if (!p.wait) add(data?.state ?? "Status unavailable.");
               if (p.wait) {
                 const reply = data && "reply" in data ? data.reply : null;
-                if (reply?.stopReason === "error") { output.push(""); add(`✗ Assistant error${reply.errorMessage ? `: ${reply.errorMessage}` : "."}`, "error"); }
-                else if (reply?.stopReason === "aborted") { output.push(""); add(`Assistant response aborted.${reply.errorMessage ? ` ${reply.errorMessage}` : ""}`, "warning"); }
-                else if (reply?.errorMessage) { output.push(""); add(`✗ ${reply.errorMessage}`, "error"); }
-                output.push("");
+                if (reply?.stopReason === "error") { add(`✗ Assistant error${reply.errorMessage ? `: ${reply.errorMessage}` : "."}`, "error"); output.push(""); }
+                else if (reply?.stopReason === "aborted") { add(`Assistant response aborted.${reply.errorMessage ? ` ${reply.errorMessage}` : ""}`, "warning"); output.push(""); }
+                else if (reply?.errorMessage) { add(`✗ ${reply.errorMessage}`, "error"); output.push(""); }
                 if (reply?.text) {
                   const text = safe(reply.text);
                   if (markdownText !== text) { markdownText = text; markdown = new Markdown(text, 0, 0, getMarkdownTheme()); }

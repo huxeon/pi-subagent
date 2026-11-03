@@ -123,7 +123,12 @@ test("in-flight create/message/destroy forward the exact cancellation signal wit
 });
 
 initTheme("dark", false);
-const theme = { fg: (_color: string, text: string) => text } as Theme;
+const boldInputs: string[] = [];
+const colorInputs: Array<[string, string]> = [];
+const theme = {
+  fg: (color: string, text: string) => { colorInputs.push([color, text]); return text; },
+  bold: (text: string) => { boldInputs.push(text); return `\x1b[1m${text}\x1b[22m`; },
+} as Theme;
 function render(args: SubagentInput, details?: ToolDetails, expanded = false, width = 100, fallback?: string, isError = false) {
   const context: CardContext = { args, state: {}, cwd: "/inherited", expanded, isError, durationMs: undefined, isPartial: details?.phase === "running", executionStarted: true, argsComplete: true, toolCallId: "id", showImages: false, outputPad: 0, lastComponent: undefined, invalidate() {}, keyText: () => "ctrl+o", keyHint: () => "ctrl+o to expand" };
   const call = toolRenderers.renderCall(args, theme, context);
@@ -134,38 +139,78 @@ function render(args: SubagentInput, details?: ToolDetails, expanded = false, wi
 }
 const done = (data?: ToolDetails["data"], c?: ToolDetails["config"]): ToolDetails => ({ version: 1, phase: "done", data, config: c });
 
-test("card snapshots: create retains task and actual cwd, only bottom status changes; expanded effective config", () => {
+test("all tool headings bold only the tool name, preserving plain operations and names across pending/final cards", () => {
+  for (const operation of ["create", "message", "inspect", "destroy"] as const) {
+    const args = { operation, name: "reviewer", prompt: "Review", followUp: operation === "message" };
+    for (const details of [undefined, done(undefined, config)]) {
+      boldInputs.length = 0;
+      colorInputs.length = 0;
+      const output = render(args, details);
+      assert.deepEqual(boldInputs, ["subagent"]);
+      assert.ok(!colorInputs.some(([, text]) => text.includes("reviewer")));
+      assert.equal(output.split("\n")[0], `subagent ${operation} reviewer${operation === "message" ? " (follow-up)" : ""}`);
+    }
+  }
+});
+
+test("compact optional labels show only enabled follow-up or wait with effective timeout; create stays unchanged", () => {
+  const title = (args: SubagentInput) => render(args, undefined, false, 240).split("\n")[0];
+  assert.equal(title({ operation: "inspect", name: "a" }), "subagent inspect a");
+  assert.equal(title({ operation: "inspect", name: "a", wait: true, timeout: 60 }), "subagent inspect a (wait, timeout 60s)");
+  assert.equal(title({ operation: "inspect", name: "a", wait: false }), "subagent inspect a");
+  assert.equal(title({ operation: "create", name: "a", prompt: "p", provider: "p", model: "m", thinking: "high", cwd: "/work" }), "subagent create a");
+});
+
+test("parenthesized options use muted color separately from the tool title, like built-in bash timeout", () => {
+  for (const [args, suffix] of [
+    [{ operation: "message", name: "a", prompt: "p", followUp: true }, " (follow-up)"],
+    [{ operation: "inspect", name: "a", wait: true }, " (wait, timeout 1800s)"],
+    [{ operation: "inspect", name: "a", wait: true, timeout: 60 }, " (wait, timeout 60s)"],
+  ] as const) {
+    for (const details of [undefined, done()]) {
+      colorInputs.length = 0;
+      render(args, details);
+      assert.ok(colorInputs.some(([color, text]) => color === "muted" && text === suffix));
+      assert.ok(colorInputs.some(([color, text]) => color === "toolTitle" && text.includes("subagent") && text.includes(` ${args.operation}`) && !text.includes(suffix)));
+    }
+  }
+});
+
+test("card snapshots: create retains task and actual cwd, only bottom status changes; expanded config is not duplicated", () => {
   const args: SubagentInput = { operation: "create", name: "reviewer", prompt: "Review 当前 changes.", cwd: "../actual" };
   const pending = render(args, { version: 1, phase: "running", config: { ...config, cwd: "/actual" } });
-  assert.equal(pending, "subagent create · reviewer\n  Review 当前 changes.\n  cwd: /actual\n\nCreating...");
+  assert.equal(pending, "subagent create reviewer\n  Review 当前 changes.\n  cwd: /actual\n\nCreating...");
   const final = render(args, done(undefined, { ...config, cwd: "/actual" }));
   assert.equal(final, pending.replace("Creating...", "✓ Created · p/m:high"));
-  assert.match(render(args, done(undefined, config), true), /provider: p\n  model: m\n  thinking: high/);
+  const expanded = render(args, done(undefined, config), true);
+  assert.doesNotMatch(expanded, /provider:|model:|thinking:/);
+  assert.match(expanded, /cwd: \/parent/);
+  assert.match(expanded, /✓ Created · p\/m:high/);
   assert.match(render({ operation: "create", name: "a", prompt: "p" }), /cwd: \/inherited\n\nCreating\.\.\./);
 });
 
 test("message/destroy snapshots and pending states; no prompt/steer mode labels", () => {
   for (const followUp of [undefined, false, true]) {
     const args: SubagentInput = { operation: "message", name: "a", prompt: "原文", followUp };
-    assert.equal(render(args, done({ invoked: true })), `subagent message · a${followUp ? " · follow-up" : ""}\n  原文\n\n✓ Delivered`);
+    assert.equal(render(args, done({ invoked: true })), `subagent message a${followUp ? " (follow-up)" : ""}\n  原文\n\n✓ Delivered`);
     assert.match(render(args), /\n\nDelivering\.\.\./);
   }
-  assert.equal(render({ operation: "destroy", name: "a" }), "subagent destroy · a\n\nDestroying...");
-  assert.equal(render({ operation: "destroy", name: "a" }, done({ destroyed: true })), "subagent destroy · a\n\n✓ Destroyed · session data deleted");
+  assert.equal(render({ operation: "destroy", name: "a" }), "subagent destroy a\n\nDestroying...");
+  assert.equal(render({ operation: "destroy", name: "a" }, done({ destroyed: true })), "subagent destroy a\n\n✓ Destroyed · session data deleted");
 });
 
 test("inspect list/status/wait snapshots; working/idle unmarked; Markdown reply separated; null/error/aborted never masked", () => {
   const args: SubagentInput = { operation: "inspect", name: "a" };
   assert.equal(render({ operation: "inspect" }, done([{ name: "reviewer", status: { available: true, workState: "working" } }, { name: "implementer", status: { available: true, workState: "idle" } }])), "subagent inspect\n\nreviewer     working\nimplementer  idle");
-  assert.equal(render(args, done({ state: "working" })), "subagent inspect · a\n\nworking");
-  assert.equal(render(args, done({ state: "idle", reply: { text: "secret", stopReason: "stop" } })), "subagent inspect · a\n\nidle");
-  assert.equal(render({ ...args, wait: true }), "subagent inspect · a\n\nWaiting for completion...");
+  assert.equal(render(args, done({ state: "working" })), "subagent inspect a\n\nworking");
+  assert.equal(render(args, done({ state: "idle", reply: { text: "secret", stopReason: "stop" } })), "subagent inspect a\n\nidle");
+  assert.equal(render({ ...args, wait: true }), "subagent inspect a (wait, timeout 1800s)\n\nWaiting for completion...");
   const success = render({ ...args, wait: true }, done({ state: "idle", reply: { text: "**中文** reply", stopReason: "stop" } }));
-  assert.match(success, /idle\n\n中文 reply/); assert.doesNotMatch(success, /✓|\*\*/);
-  assert.match(render({ ...args, wait: true }, done({ state: "idle", reply: null })), /idle\n\nNo assistant reply\./);
+  assert.match(success, /\n\n中文 reply/); assert.doesNotMatch(success, /\nidle\n/); assert.doesNotMatch(success, /✓|\*\*/);
+  assert.match(render({ ...args, wait: true }, done({ state: "idle", reply: null })), /\n\nNo assistant reply\./);
   for (const stopReason of ["error", "aborted"] as const) {
     const output = render({ ...args, wait: true }, done({ state: "idle", reply: { text: "原文", stopReason, errorMessage: "reason" } }));
-    assert.match(output, /idle\n\n/); assert.match(output, /reason/); assert.match(output, /原文/); assert.doesNotMatch(output, /✓ idle/);
+    assert.doesNotMatch(output, /\nidle\n/); assert.match(output, /reason/); assert.match(output, /原文/); assert.doesNotMatch(output, /✓ idle/);
     assert.equal(output.includes("✗"), stopReason === "error");
   }
 });
@@ -181,8 +226,8 @@ test("error/timeout/cancel snapshots, disconnected fact, Pi-owned fallback failu
     assert.match(render(args, undefined, false, 100, "Invalid parameters", true), /✗ Invalid parameters/);
   }
   const args: SubagentInput = { operation: "inspect", name: "a", wait: true };
-  assert.equal(render(args, { version: 1, phase: "timeout", error: { code: "TIMEOUT", message: "timeout" } }), "subagent inspect · a\n\n✗ Wait timed out after 1800s. Subagent continues running.");
-  assert.equal(render(args, { version: 1, phase: "cancelled", error: { code: "ABORTED", message: "aborted" } }), "subagent inspect · a\n\nWait cancelled. Subagent continues running.");
+  assert.equal(render(args, { version: 1, phase: "timeout", error: { code: "TIMEOUT", message: "timeout" } }), "subagent inspect a (wait, timeout 1800s)\n\n✗ Wait timed out after 1800s. Subagent continues running.");
+  assert.equal(render(args, { version: 1, phase: "cancelled", error: { code: "ABORTED", message: "aborted" } }), "subagent inspect a (wait, timeout 1800s)\n\nWait cancelled. Subagent continues running.");
 });
 
 test("compact/expanded Chinese, emoji, long unbroken text, Markdown code/table, narrow terminals; replay needs no live child", async () => {

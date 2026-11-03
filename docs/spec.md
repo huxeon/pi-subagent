@@ -332,6 +332,9 @@ sequenceDiagram
 ### 9.2 `/subagent` 选择进入
 
 - 列出当前父会话的协作者，显示名称、状态等概览信息。
+- 选择界面显式使用 Pi 的 `DynamicBorder` 绘制顶部和底部边框，颜色使用主题的 `accent`，与参考实现的风格保持一致。
+- 布局顺序为：顶部边框、标题、空行、列表、空行、键盘提示、底部边框。顶部边框与标题之间、键盘提示与底部边框之间不添加空行。
+- 状态刷新、终端缩放和空列表时保持上述边框与间距；所有行按可用终端列宽渲染或截断，包括极窄宽度。
 - 与常驻 widget 共用状态快照和同一个刷新器，不单独轮询。
 - 刷新列表时保留当前选择，不因状态更新跳动。
 - 支持键盘选择、确认与取消；不将鼠标点击作为必需交互。
@@ -374,6 +377,8 @@ UI 状态刷新不改变 `inspect(wait=true)` 的事件驱动等待机制；本�
 ### 10.1 通用规则
 
 - 工具卡片的标题、状态和提示使用英文；输入 prompt 和子代理回复保持原文，不翻译。
+- 调用标题以 `subagent 操作 名称`（如 `subagent create reviewer`）展示。仅工具名 `subagent` 加粗，操作名保持普通字重，两者使用 `toolTitle` 主题色；子代理名称仅用空格分隔，使用普通文本样式，不加粗、不使用 accent 高亮，不添加圆点或文件链接。`follow-up` 等参数保持普通字重。调用中与结果卡片使用相同标题样式。
+- create 不在标题中额外展示可选配置，沿用 cwd 行与底部配置结果。message 仅在 `followUp=true` 时附加 `(follow-up)`；inspect 仅在 `wait=true` 时附加 `(wait, timeout XXs)`，XX 为有效超时秒数，省略 timeout 时显示默认 1800。false 或未启用时不显示标签。括号及其中的参数使用 `muted` 主题色、保持普通字重，与内置 bash 工具的 timeout 后缀样式一致。
 - 调用信息与执行结果之间使用空行分隔。
 - 成功结果使用 `✓`，错误和等待超时使用 `✗`。
 - `working`、`idle` 不加成功标记：工作空闲不代表任务成功。
@@ -386,7 +391,7 @@ UI 状态刷新不改变 `inspect(wait=true)` 的事件驱动等待机制；本�
 调用中保留任务摘要与实际生效的 cwd（包括继承值），底部显示 `Creating...`：
 
 ```text
-subagent create · reviewer
+subagent create reviewer
   Review the current changes, focusing on error handling.
   cwd: /home/huxeon/workspaces/pi-subagent
 
@@ -396,28 +401,28 @@ Creating...
 成功后只替换底部状态，其他内容保持不变。底部使用实际生效的 provider、model、thinking：
 
 ```text
-subagent create · reviewer
+subagent create reviewer
   Review the current changes, focusing on error handling.
   cwd: /home/huxeon/workspaces/pi-subagent
 
 ✓ Created · provider/model:thinking
 ```
 
-展开后可查看完整 prompt 和有效配置。
+展开后可查看完整 prompt；不额外列出 provider、model、thinking，它们已在底部结果中展示。cwd 行保持不变。
 
 ### 10.3 message
 
-不根据运行时状态显示 `prompt` 或 `steer`；仅当参数显式设置 `followUp=true` 时在调用行显示 `follow-up`。调用已发起后底部统一显示 `✓ Delivered`，不区分 Delivered / Queued。这里的 `Delivered` 仅表示已调用 Pi 输入 API，不是消息已接受、排队、落盘或任务完成的保证。
+不根据运行时状态显示 `prompt` 或 `steer`；仅在 `followUp=true` 时在调用行显示 `(follow-up)`，false 或省略时不显示。调用已发起后底部统一显示 `✓ Delivered`，不区分 Delivered / Queued。这里的 `Delivered` 仅表示已调用 Pi 输入 API，不是消息已接受、排队、落盘或任务完成的保证。
 
 ```text
-subagent message · reviewer
+subagent message reviewer
   Also check cancellation handling.
 
 ✓ Delivered
 ```
 
 ```text
-subagent message · reviewer · follow-up
+subagent message reviewer (follow-up)
   Summarize the findings after finishing the review.
 
 ✓ Delivered
@@ -437,7 +442,7 @@ implementer    idle
 指定 name 且不等待，仅显示状态，不附带最新回复：
 
 ```text
-subagent inspect · reviewer
+subagent inspect reviewer
 
 working
 ```
@@ -445,17 +450,15 @@ working
 等待期间：
 
 ```text
-subagent inspect · reviewer
+subagent inspect reviewer (wait, timeout 1800s)
 
 Waiting for completion...
 ```
 
-等待完成（或 wait=true 请求时已经 idle）后，调用行、状态、回复分别用空行分隔：
+等待完成（或 wait=true 请求时已经 idle）后，不再展示工作状态，调用行与回复用空行分隔。仅调整工具卡片展示，不改变协议中的状态信息：
 
 ```text
-subagent inspect · reviewer
-
-idle
+subagent inspect reviewer (wait, timeout 1800s)
 
 Found two issues:
 1. …
@@ -467,7 +470,7 @@ Found two issues:
 调用中：
 
 ```text
-subagent destroy · reviewer
+subagent destroy reviewer
 
 Destroying...
 ```
@@ -475,7 +478,7 @@ Destroying...
 成功后：
 
 ```text
-subagent destroy · reviewer
+subagent destroy reviewer
 
 ✓ Destroyed · session data deleted
 ```
@@ -485,13 +488,13 @@ subagent destroy · reviewer
 错误结果与调用信息用空行分隔，底部以 `✗` 开头，例如：
 
 ```text
-subagent create · reviewer
+subagent create reviewer
 
 ✗ A subagent named "reviewer" already exists.
 ```
 
 ```text
-subagent inspect · reviewer
+subagent inspect reviewer
 
 ✗ Connection lost. Subagent status is unknown.
 ```
@@ -499,7 +502,7 @@ subagent inspect · reviewer
 等待超时：
 
 ```text
-subagent inspect · reviewer
+subagent inspect reviewer (wait, timeout 1800s)
 
 ✗ Wait timed out after 1800s. Subagent continues running.
 ```
@@ -507,7 +510,7 @@ subagent inspect · reviewer
 主动取消等待：
 
 ```text
-subagent inspect · reviewer
+subagent inspect reviewer (wait, timeout 1800s)
 
 Wait cancelled. Subagent continues running.
 ```

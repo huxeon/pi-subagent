@@ -1,4 +1,4 @@
-import type { Theme } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder, type Theme } from "@earendil-works/pi-coding-agent";
 import { SelectList, truncateToWidth, visibleWidth, type Component, type KeybindingsManager } from "@earendil-works/pi-tui";
 import { stripVTControlCharacters } from "node:util";
 import type { UiEntry } from "./ui-refresh.ts";
@@ -71,9 +71,12 @@ export class SubagentPicker implements Component {
   }
   render(width: number): string[] {
     const hint = (action: Parameters<KeybindingsManager["getKeys"]>[0]) => this.keys.getKeys(action).join("/");
-    return [this.theme.fg("accent", "Select subagent"),
+    const border = new DynamicBorder(text => this.theme.fg("accent", text)).render(Math.max(0, width));
+    return [...border, this.theme.fg("accent", "Select subagent"), "",
       ...(this.rows.length ? this.list!.render(width) : [this.theme.fg("muted", "No subagents.")]),
+      "",
       this.theme.fg("dim", `${hint("tui.select.up")}/${hint("tui.select.down")} move · ${hint("tui.select.confirm")} select · ${hint("tui.select.cancel")} cancel`),
+      ...border,
     ].map(line => truncateToWidth(line, Math.max(0, width)));
   }
   handleInput(data: string): void {

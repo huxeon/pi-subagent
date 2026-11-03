@@ -85,6 +85,25 @@ test("widget hidden at zero, capped at five, width-safe Chinese/emoji/long names
   assert.equal(renderWidget([entry("\x1b[31mname\x1b[0m")], 80, theme).join("").includes("\x1b"), false);
 });
 
+test("picker has theme-colored top/bottom borders across refresh, resize and empty lists", () => {
+  const colors: string[] = [];
+  const pickerTheme = { fg(color: string, text: string) { if (/^─+$/.test(text)) colors.push(color); return text; } } as Theme;
+  const picker = new SubagentPicker(pickerTheme, new KeybindingsManager(TUI_KEYBINDINGS), () => {}, () => {});
+  for (const entries of [[entry("reviewer")], [entry("reviewer", true), offline("other")], []]) {
+    picker.update(entries);
+    picker.invalidate();
+    for (const width of [0, 1, 20, 80]) {
+      const lines = picker.render(width);
+      assert.equal(lines[0], "─".repeat(width));
+      assert.equal(lines.at(-1), "─".repeat(width));
+      assert.ok(lines.some(line => line.includes("Select subagent")) || width < 15);
+      for (const line of lines) assert.ok(visibleWidth(line) <= width);
+    }
+  }
+  assert.ok(colors.length > 0);
+  assert.ok(colors.every(color => color === "accent"));
+});
+
 test("terminal detach/exception/spawn failure always restores TUI", () => {
   for (const fails of [false, true]) {
     const calls: string[] = [];
