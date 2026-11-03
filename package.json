@@ -4,6 +4,9 @@
   "private": true,
   "description": "A tmux-based subagent extension for Pi.",
   "type": "module",
+  "engines": {
+    "node": ">=22.18.0"
+  },
   "keywords": [
     "pi-package",
     "pi-extension",
@@ -11,7 +14,8 @@
     "subagent"
   ],
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/*.test.ts"
   },
   "pi": {
     "extensions": ["./index.ts"]
