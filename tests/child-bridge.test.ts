@@ -192,25 +192,29 @@ test("real transport cancellation/timeout/disconnect isolate waits; remaining pe
 type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
 function eventHost(send?: ExtensionAPI["sendUserMessage"]) {
   const handlers = new Map<string, Handler>();
+  const tools: string[] = [];
   const pi = new Proxy({}, { get(_target, key) {
+    if (key === "registerTool") return (tool: { name: string }) => { tools.push(tool.name); };
     if (key === "sendUserMessage" && send) return send;
     if (key === "getThinkingLevel") return () => "high";
     if (key === "on") return (name: string, handler: Handler) => { handlers.set(name, handler); return () => handlers.delete(name); };
     throw new Error(`Unexpected capability: ${String(key)}`); // tool/UI/resource filtering forbidden
   } }) as ExtensionAPI;
-  return { pi, handlers, emit: async (name: string, ctx: ExtensionContext) => { await handlers.get(name)?.({ type: name }, ctx); } };
+  return { pi, handlers, tools, emit: async (name: string, ctx: ExtensionContext) => { await handlers.get(name)?.({ type: name }, ctx); } };
 }
 
-test("entry selects child only by dedicated env; factory registers events, no tools/UI/resources", () => {
+test("entry registers one parent tool, no child tools or UI/resources", () => {
   const previous = process.env.PI_SUBAGENT_RUN_DIR;
   try {
     delete process.env.PI_SUBAGENT_RUN_DIR;
     const parent = eventHost();
     extension(parent.pi);
+    assert.deepEqual(parent.tools, ["subagent"]);
     assert.deepEqual([...parent.handlers.keys()], ["session_start", "session_shutdown"]);
     process.env.PI_SUBAGENT_RUN_DIR = "/unused/child";
     const child = eventHost();
     extension(child.pi);
+    assert.deepEqual(child.tools, []);
     assert.deepEqual([...child.handlers.keys()], ["session_start", "agent_start", "agent_settled", "session_shutdown"]);
     process.env.PI_SUBAGENT_RUN_DIR = "";
     assert.throws(() => extension(child.pi));

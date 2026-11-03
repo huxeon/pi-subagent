@@ -188,6 +188,29 @@ test("destroy live/stopped records and repeated cleanup; symlink replacement and
   assert.equal(await readFile(other.sessionFile, "utf8"), "other");
 });
 
+test("destroy cancellation is checked before stop; an initiated graceful stop finishes, then retains session on cancellation", async t => {
+  const f = await fixture(t);
+  await f.manager.create(input(), f.config);
+  const c = new AbortController(); c.abort();
+  await assert.rejects(f.manager.destroy("worker", { signal: c.signal }), { code: "ABORTED" });
+  assert.equal(f.calls.filter(call => call.op === "stop").length, 0);
+  const saved = await readFile(f.paths("worker").sessionFile, "utf8");
+  const during = new AbortController();
+  const originalStop = f.options.driver.stop;
+  let stopped = false;
+  f.options.driver.stop = async paths => {
+    during.abort();
+    await originalStop(paths);
+    stopped = true;
+  };
+  await assert.rejects(f.manager.destroy("worker", { signal: during.signal }), { code: "ABORTED" });
+  assert.equal(stopped, true);
+  assert.equal(await readFile(f.paths("worker").sessionFile, "utf8"), saved);
+  f.options.driver.stop = originalStop;
+  await f.manager.destroy("worker");
+  assert.deepEqual(await readdir(f.paths("worker").parentDir), []);
+});
+
 test("quit/new/resume/fork stop and preserve history; lifecycle factory only registers hooks", async t => {
   for (const reason of ["quit", "new", "resume", "fork"] as const) {
     const f = await fixture(t); await f.manager.create(input(), f.config);

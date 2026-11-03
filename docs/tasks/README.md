@@ -15,7 +15,7 @@
 | 03 | [Unix socket 请求、响应和取消](03-socket.md) | 02 | 已完成；协议/API、取消与资源所有权见[交接](handoffs/03.md) |
 | 04 | [子代理控制桥](04-child-bridge.md) | 03 | 已完成；控制桥 API、状态/等待与清理语义见[交接](handoffs/04.md) |
 | 05 | [父侧管理与生命周期](05-parent-lifecycle.md) | 04 | 已完成；服务 API、进程定位/停止及恢复边界见[交接](handoffs/05.md) |
-| 06 | [subagent 工具与调用展示](06-tool.md) | 05 | 待开始 |
+| 06 | [subagent 工具与调用展示](06-tool.md) | 05 | 已完成；schema、返回结构、卡片与取消边界见[交接](handoffs/06.md) |
 | 07 | [状态 widget 与选择进入](07-ui.md) | 06 | 待开始 |
 | 08 | [端到端验收与使用文档](08-integration.md) | 07 | 待开始 |
 

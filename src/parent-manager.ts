@@ -230,14 +230,25 @@ export class ParentManager {
       } catch (error) { return { name: path.name, connected: false, error: errorText(error) }; }
     }).catch(error => ({ name: path.name, connected: false, error: errorText(error) }))));
   }
-  async destroy(name: string): Promise<void> {
+  async destroy(name: string, options: RequestOptions = {}): Promise<void> {
     const paths = this.paths(name);
+    const signal = this.signal(options.signal);
+    this.check(signal);
     return this.mutate(name, async () => {
+      this.check(signal);
       await this.closeClient(name);
       if (!await this.assertDirectory(paths)) return; // Idempotent, including stopped children.
+      this.check(signal);
+      // A graceful stop already initiated must finish safely; cancellation never
+      // abandons process cleanup or claims the operation was rolled back.
       await this.options.driver.stop(paths);
+      this.check(signal);
       await cleanupStaleSocket(paths.runDir, this.options.transport);
-      if (await this.assertDirectory(paths)) await rm(paths.runDir, { recursive: true, force: true });
+      this.check(signal);
+      if (await this.assertDirectory(paths)) {
+        this.check(signal);
+        await rm(paths.runDir, { recursive: true, force: true });
+      }
     });
   }
   shutdown(reason: SessionShutdownEvent["reason"]): Promise<void> {
