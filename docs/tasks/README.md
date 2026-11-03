@@ -13,7 +13,7 @@
 | 01 | [验证 Pi API、落盘与恢复](01-verify-pi.md) | 无 | 已完成；投递确认语义已确认（[交接](handoffs/01.md)） |
 | 02 | [基础模型、路径与测试基础](02-foundation.md) | 01 | 已完成；名称/路径/API 及验证见[交接](handoffs/02.md) |
 | 03 | [Unix socket 请求、响应和取消](03-socket.md) | 02 | 已完成；协议/API、取消与资源所有权见[交接](handoffs/03.md) |
-| 04 | [子代理控制桥](04-child-bridge.md) | 03 | 待开始 |
+| 04 | [子代理控制桥](04-child-bridge.md) | 03 | 已完成；控制桥 API、状态/等待与清理语义见[交接](handoffs/04.md) |
 | 05 | [父侧管理与生命周期](05-parent-lifecycle.md) | 04 | 待开始 |
 | 06 | [subagent 工具与调用展示](06-tool.md) | 05 | 待开始 |
 | 07 | [状态 widget 与选择进入](07-ui.md) | 06 | 待开始 |
