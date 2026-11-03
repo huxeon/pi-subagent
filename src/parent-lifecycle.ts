@@ -13,7 +13,9 @@ export function parentConfig(pi: ExtensionAPI, ctx: ExtensionContext): Effective
 /** Getter is the shared entry point for later tools/UI; factory itself starts no resources. */
 export function registerParentLifecycle(pi: ExtensionAPI, create?: (options: ManagerOptions) => ParentManager): {
   current(): ParentManager; recovery(): readonly RecoveryResult[];
+  onStopping(cleanup: () => void): void;
 } {
+  const cleanups = new Set<() => void>();
   let manager: ParentManager | undefined;
   let starting: Promise<RecoveryResult[]> | undefined;
   let results: RecoveryResult[] = [];
@@ -29,9 +31,18 @@ export function registerParentLifecycle(pi: ExtensionAPI, create?: (options: Man
     const failures = results.filter(result => !result.connected);
     if (failures.length) throw new AggregateError(failures.map(result => new Error(`${result.name}: ${result.error}`)), "Some subagents could not be recovered");
   });
-  pi.on("session_shutdown", async event => { await manager?.shutdown(event.reason); });
+  pi.on("session_shutdown", async event => {
+    // UI must release old contexts/timers before potentially slow process stopping.
+    try {
+      for (const cleanup of cleanups) cleanup();
+    } finally {
+      cleanups.clear();
+      await manager?.shutdown(event.reason);
+    }
+  });
   return {
     current: () => { if (!manager) throw new Error("Parent session has not started"); return manager; },
     recovery: () => results,
+    onStopping: cleanup => { cleanups.add(cleanup); },
   };
 }

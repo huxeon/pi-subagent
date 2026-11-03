@@ -22,13 +22,16 @@ async function fixture(t: TestContext) {
 test("default entry is a side-effect-free factory; internal types", () => {
   const events: string[] = [];
   const tools: string[] = [];
+  const commands: string[] = [];
   const pi = new Proxy({}, { get(_target, key) {
     if (key === "on") return (event: string) => { events.push(event); return () => {}; };
+    if (key === "registerCommand") return (name: string) => { commands.push(name); };
     if (key === "registerTool") return (tool: { name: string }) => { tools.push(tool.name); };
     throw new Error("Factory must only register lifecycle events and the tool");
   } }) as ExtensionAPI;
   assert.equal(extension(pi), undefined);
-  assert.deepEqual(events, ["session_start", "session_shutdown"]);
+  assert.deepEqual(events, ["session_start", "session_shutdown", "session_start"]);
+  assert.deepEqual(commands, ["subagent"]);
   assert.deepEqual(tools, ["subagent"]);
   const operations: SubagentOperation[] = [
     { operation: "create", name: "a", prompt: "p", thinking: "high" },
