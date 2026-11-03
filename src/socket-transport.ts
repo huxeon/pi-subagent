@@ -101,6 +101,12 @@ async function removeStaleSocket(path: string, timeoutMs: number): Promise<void>
   throw failure("SOCKET_IN_USE", `Socket already has a listener: ${path}`);
 }
 
+/** Parent cleanup uses exactly the listener's ownership/probe/inode checks. Never removes a live endpoint. */
+export async function cleanupStaleSocket(runDir: string, options: TransportOptions = {}): Promise<void> {
+  const { socketPath } = await prepareSocketAddress(runDir, options.address);
+  await removeStaleSocket(socketPath, options.connectTimeoutMs ?? 5000);
+}
+
 export class SocketClient {
   readonly socketPath: string;
   private readonly socket: Socket;

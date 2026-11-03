@@ -194,6 +194,7 @@ function eventHost(send?: ExtensionAPI["sendUserMessage"]) {
   const handlers = new Map<string, Handler>();
   const pi = new Proxy({}, { get(_target, key) {
     if (key === "sendUserMessage" && send) return send;
+    if (key === "getThinkingLevel") return () => "high";
     if (key === "on") return (name: string, handler: Handler) => { handlers.set(name, handler); return () => handlers.delete(name); };
     throw new Error(`Unexpected capability: ${String(key)}`); // tool/UI/resource filtering forbidden
   } }) as ExtensionAPI;
@@ -206,7 +207,7 @@ test("entry selects child only by dedicated env; factory registers events, no to
     delete process.env.PI_SUBAGENT_RUN_DIR;
     const parent = eventHost();
     extension(parent.pi);
-    assert.equal(parent.handlers.size, 0); // parent implementation deferred
+    assert.deepEqual([...parent.handlers.keys()], ["session_start", "session_shutdown"]);
     process.env.PI_SUBAGENT_RUN_DIR = "/unused/child";
     const child = eventHost();
     extension(child.pi);
@@ -261,6 +262,20 @@ test("session lifecycle starts only on start, ignores agent_end, shutdown cleans
   assert.deepEqual(await next.request("inspect", {}), { state: "working" });
   await replacement.emit("session_shutdown", ctx);
   assert.deepEqual(await readdir(f.runDir), []);
+});
+
+test("live identity reports the actual child session/configuration without requiring persistence", async t => {
+  const f = await fixture(t);
+  const host = eventHost(() => {});
+  const ctx = { cwd: "/actual/cwd", model: { provider: "p", id: "m" }, isIdle: () => true,
+    sessionManager: { getSessionFile: () => "/actual/session.jsonl", getBranch: () => [] } } as unknown as ExtensionContext;
+  registerChildBridge(host.pi, f.runDir, f.options);
+  t.after(() => host.emit("session_shutdown", ctx));
+  await host.emit("session_start", ctx);
+  const client = await f.connect();
+  assert.deepEqual(await client.request("identity", {}), { runDir: f.runDir, sessionFile: "/actual/session.jsonl",
+    pid: process.pid, cwd: "/actual/cwd", provider: "p", model: "m", thinking: "high" });
+  await client.close();
 });
 
 test("shutdown during pending startup awaits and closes its owned listener", async t => {

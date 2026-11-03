@@ -155,4 +155,12 @@ env PI_SUBAGENT_RUN_DIR=<同一个绝对运行目录>
 
 未验证，不应记作已验收：真实付费模型、真实 provider 重试/自动压缩组合、真实长期工具的停止、工具取消/inspect 取消协议、用户真实的扩展/技能/package/trust 组合、父子多进程完整恢复和异常 socket/旧进程去重、tmux 人工 attach/switch-client、窗口极端条件、崩溃/断电持久性、名称和地址规则的实现。JSONL 同步 write 不等于 fsync/事务，未保证断电完整性。协议分帧/错误结构/输出上限是后续任务，不在此处提前确定。
 
-参考实现的 metadata.json、inbox、suspended、persisted state 和重新传启动配置均不迁移。名称编码/目录规范化/tmux 名称派生遵循 spec 约束，具体规则留任务 02/05；socket 哈希遵循 spec 7，不另造业务 ID。
+参考实现的 metadata.json、inbox、suspended、persisted state 和重新传启动配置均不迁移。名称编码/目录规范化/tmux 名称派生遵循 spec 约束，具体规则见任务 02/05 交接；socket 哈希遵循 spec 7，不另造业务 ID。
+
+## 7. 任务 05 补充：运行中进程定位
+
+实际 1.5.0 `dist/cli/setup.js` 及 bundled `cli-runtime.js` 设置 `process.title = APP_NAME`（当前为 `pi`），会覆盖 Linux `/proc/<pid>/cmdline` 中的原 argv。因此 `--session <path>` 只能识别尚未修改标题的启动阶段，不能作为运行中 Pi 的唯一定位条件。
+
+任务 05 使用初始环境中的原样 `PI_SUBAGENT_RUN_DIR` + `PI_SUBAGENT_SESSION_FILE`，结合当前 UID、Pi 标题/启动 argv、tmux session 环境归属以及内存中的 `/proc/stat` starttime 复核。两个路径变量通过 tmux new-session 环境传入，不持久化 PID 或额外记录。候选身份不可读取时 fail closed；无关同 UID 进程先按公开 cmdline 过滤，避免无关服务拒绝 environ 读取阻塞全部管理。
+
+受控 tmux 进程测试已模拟 `process.title='pi'`，验证重新发现、SIGTERM 后等待异步清理和退出、再清 tmux/socket，以及仅 session 文件恢复不重放。**新生产 driver 与真实 Pi 的完整集成仍未验证**；不把该受控测试当成真实模型/工具停止的验收。当前实现限定 Linux 和 `pi` 标题；其他 OS/重品牌需另行验证。完整 API、失败清理与测试结果见 [任务 05 交接](tasks/handoffs/05.md)。

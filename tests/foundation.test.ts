@@ -20,8 +20,13 @@ async function fixture(t: TestContext) {
 }
 
 test("default entry is a side-effect-free factory; internal types", () => {
-  const pi = new Proxy({}, { get() { throw new Error("No capability should be accessed yet"); } }) as ExtensionAPI;
+  const events: string[] = [];
+  const pi = new Proxy({}, { get(_target, key) {
+    if (key === "on") return (event: string) => { events.push(event); return () => {}; };
+    throw new Error("Factory must only register lifecycle events");
+  } }) as ExtensionAPI;
   assert.equal(extension(pi), undefined);
+  assert.deepEqual(events, ["session_start", "session_shutdown"]);
   const operations: SubagentOperation[] = [
     { operation: "create", name: "a", prompt: "p", thinking: "high" },
     { operation: "message", name: "a", prompt: "p", followUp: true },

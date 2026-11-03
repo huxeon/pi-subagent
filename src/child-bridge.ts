@@ -8,7 +8,14 @@ export interface ChildPiAdapter {
   isIdle(): boolean;
   getBranch(): SessionEntry[];
   sendUserMessage: ExtensionAPI["sendUserMessage"];
+  identity?(): ChildIdentity;
 }
+
+/** Live observation only. PID/configuration are never persisted by this extension. */
+export type ChildIdentity = {
+  runDir: string; sessionFile: string | null; pid: number;
+  cwd: string; provider: string | null; model: string | null; thinking: string;
+};
 
 export type AssistantReply = {
   text: string;
@@ -76,6 +83,7 @@ export class ChildBridge {
   readonly handle: RequestHandler = (method, params, { signal }: RequestContext) => {
     if (this.closed) throw failure("BRIDGE_CLOSED", "Child bridge is closed");
     if (signal.aborted) throw failure("ABORTED", "Request cancelled");
+    if (method === "identity" && this.pi.identity) return this.pi.identity();
     if (method !== "message" && method !== "inspect") throw failure("METHOD_NOT_FOUND", `Unknown method: ${method}`);
     const input = objectParams(params);
     if (method === "message") {
@@ -125,6 +133,8 @@ export function registerChildBridge(pi: ExtensionAPI, runDir: string, options: T
       isIdle: () => ctx.isIdle(),
       getBranch: () => ctx.sessionManager.getBranch(),
       sendUserMessage: (content, delivery) => pi.sendUserMessage(content, delivery),
+      identity: () => ({ runDir, sessionFile: ctx.sessionManager.getSessionFile() ?? null, pid: process.pid,
+        cwd: ctx.cwd, provider: ctx.model?.provider ?? null, model: ctx.model?.id ?? null, thinking: pi.getThinkingLevel() }),
     });
     server = SocketServer.listen(runDir, bridge.handle, options);
     try { await server; }

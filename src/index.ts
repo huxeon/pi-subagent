@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerChildBridge } from "./child-bridge.ts";
 import { normalizeAbsolutePath } from "./paths.ts";
+import { registerParentLifecycle } from "./parent-lifecycle.ts";
 
 export default function subagentExtension(pi: ExtensionAPI): void {
   const runDir = process.env.PI_SUBAGENT_RUN_DIR;
@@ -9,5 +10,5 @@ export default function subagentExtension(pi: ExtensionAPI): void {
     registerChildBridge(pi, normalizeAbsolutePath(runDir));
     return;
   }
-  // Parent tool, lifecycle management and UI belong to subsequent tasks.
+  registerParentLifecycle(pi); // Tools and UI are intentionally not registered yet.
 }
