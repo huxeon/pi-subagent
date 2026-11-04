@@ -1,5 +1,7 @@
 # Pi API、落盘与恢复验证记录（任务 01）
 
+> 接口命名更新：当前工具使用 `spawn/send/list/status/wait/stop`。本文及任务交接中的 `create/message/inspect/destroy` 是历史名称：分别对应 `spawn/send`、拆分后的 `list/status/wait` 与 `stop`；`stop` 仍永久删除整个子代理运行目录和会话。底层 socket 的 `identity/message/inspect` 方法保持不变，以便父扩展重载后仍能连接旧子桥。当前接口以 [设计规格](spec.md) 和 [README](../README.md) 为准；下文保留原始验证记录，不代表本次更名已重新完成全部验收。
+
 ## 结论与用户确认
 
 验证对象：**`@earendil-works/pi-coding-agent@1.5.0`**，不是旧包名 `@mariozechner/pi-coding-agent`。当前 Pi 会映射旧导入名，但新代码应使用新包名；schema 使用 `typebox`。Node v26.13.0，Linux，tmux 3.6。结论针对该安装版本，升级需重跑探针。
@@ -176,3 +178,11 @@ env PI_SUBAGENT_RUN_DIR=<同一个绝对运行目录>
 另新增受控多进程 `tests/integration.test.ts` + `fixtures/fake-pi.ts`：生产工具/manager/子入口/socket、原生 JSONL，模拟 Pi 工作事件/回复，覆盖 create→message→等待→settled→destroy、取消/超时不产生迟到结果、断线/异常退出/失败、早停恢复/同名隔离。**模拟不能视为真实模型调度通过**。任务 08 最终全套 75/75 与 typecheck 通过，原 `test:pi-api` 探针重跑通过。
 
 仍未完成真实模型全链路、真实父 Pi 的完整 reload/切换会话接线及人工 TUI 屏幕验收；此前关于这些场景“未验证”的结论仍成立。逐项级别/剩余范围见 [任务 08 交接](tasks/handoffs/08.md)，不要将 manager 调用加真实子 Pi 的验证表述为完整父 Pi/模型/TUI 验收。
+
+## 9. 六操作接口迁移
+
+用户确认保留现有架构，公开工具与 manager 改为 `spawn/send/list/status/wait/stop`；`stop` 仅更名，仍安全停止并永久删除整个运行目录与 session。`list` 不接受额外参数，其他操作的 name 必填；移除工具 `wait` 布尔字段，timeout 仅用于独立的 `wait` 操作。send/等待/取消/生命周期语义不变，不保留旧操作别名。
+
+底层 socket 的 `identity/message/inspect` 以及协议帧保持不变：`send` 使用 `message`，`status` 与 `wait` 分别使用 `inspect` 的非等待/等待请求，以兼容父扩展 reload 后仍运行的旧子桥。迁移同步更新 schema、校验、工具说明、卡片、父 UI 调用与测试。
+
+本次运行 `npm run typecheck`、默认测试（82/82，通过且无跳过）和两项指定 Pi 1.5.0 的离线探针（`test:pi-api`、`test:pi-production`）全部通过。探针隔离用户配置，未调用真实模型或接管用户终端；真实父 Pi 生命周期端到端、付费模型及人工 TUI 的未验收范围不变。

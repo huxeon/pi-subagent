@@ -44,7 +44,7 @@ test("one refresher, shared snapshot, non-reentry, immediate start and no late u
   assert.deepEqual(refresh.snapshot, []); assert.equal(calls, 2); assert.equal(widget[0]?.name, "中文");
 });
 
-test("create/destroy/recover lists replace snapshots; global errors never preserve available state", async () => {
+test("spawn/stop/recover lists replace snapshots; global errors never preserve available state", async () => {
   let entries = [entry("a")]; let error = false;
   const refresh = new UiRefresh({ async list() { if (error) throw new Error("scan failed"); return entries; } }, new Clock());
   await refresh.refresh(); entries = [entry("a", true), offline("b")]; await refresh.refresh();

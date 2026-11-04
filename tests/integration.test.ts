@@ -113,36 +113,37 @@ async function fixture(t: TestContext) {
   };
   return { root, config, manager, paths, child, starts, flags, tool, driver };
 }
-const create = { operation: "create", name: "worker", prompt: "initial 中文 task" } as const;
+const spawn = { operation: "spawn", name: "worker", prompt: "initial 中文 task" } as const;
 
-test("controlled process: tool → manager → production child entry/socket → native history → latest reply → destroy", async t => {
+test("controlled process: tool → manager → production child entry/socket → native history → latest reply → stop", async t => {
   const f = await fixture(t); const manager = f.manager(); const call = f.tool(manager);
-  const created = await call(create);
+  const created = await call(spawn);
   assert.equal(created.isError, false);
   assert.deepEqual(created.details.data, { name: "worker", config: f.config, invoked: true });
-  assert.deepEqual(await call({ operation: "inspect", name: "worker" }).then(r => r.details.data), { state: "working" });
-  assert.equal((await f.child().command("stats")).reads, 0, "instant inspect never reads reply");
+  assert.deepEqual(await call({ operation: "status", name: "worker" }).then(r => r.details.data), { state: "working" });
+  assert.deepEqual((await call({ operation: "list" })).details.data, [{ name: "worker", status: { available: true, workState: "working" } }]);
+  assert.equal((await f.child().command("stats")).reads, 0, "status/list never read reply");
   for (const input of [
-    { operation: "message", name: "worker", prompt: "default steering" },
-    { operation: "message", name: "worker", prompt: "follow-up", followUp: true },
+    { operation: "send", name: "worker", prompt: "default steering" },
+    { operation: "send", name: "worker", prompt: "follow-up", followUp: true },
   ] as const) assert.equal((await call(input)).isError, false);
   const stats = await f.child().command("stats");
   assert.deepEqual(stats.deliveries, [
-    { prompt: create.prompt, delivery: null },
+    { prompt: spawn.prompt, delivery: null },
     { prompt: "default steering", delivery: { deliverAs: "steer" } },
     { prompt: "follow-up", delivery: { deliverAs: "followUp" } },
   ]);
-  const waiting = call({ operation: "inspect", name: "worker", wait: true });
+  const waiting = call({ operation: "wait", name: "worker" });
   await f.child().command("settle", "最新 reply **原文**");
   const result = await waiting;
   assert.equal(result.isError, false);
   assert.deepEqual(result.details.data, { state: "idle", reply: { text: "最新 reply **原文**", stopReason: "stop" } });
-  assert.deepEqual((await call({ operation: "inspect", name: "worker" })).details.data, { state: "idle" });
-  await call({ operation: "message", name: "worker", prompt: "new work", followUp: true });
+  assert.deepEqual((await call({ operation: "status", name: "worker" })).details.data, { state: "idle" });
+  await call({ operation: "send", name: "worker", prompt: "new work", followUp: true });
   assert.deepEqual((await f.child().command("stats")).deliveries.at(-1), { prompt: "new work", delivery: null });
-  // destroy removes extra run records too, not just session.jsonl.
+  // stop removes extra run records too, not just session.jsonl.
   await writeFile(join(f.paths().runDir, "extra-test-record"), "owned");
-  assert.equal((await call({ operation: "destroy", name: "worker" })).isError, false);
+  assert.equal((await call({ operation: "stop", name: "worker" })).isError, false);
   await assert.rejects(readFile(f.paths().sessionFile), { code: "ENOENT" });
   await assert.rejects(readdir(f.paths().runDir), { code: "ENOENT" });
   assert.equal(await f.driver.isRunning(f.paths()), false);
@@ -150,17 +151,17 @@ test("controlled process: tool → manager → production child entry/socket →
 
 test("controlled process: cancel/timeout end only their wait; late settled reads only the surviving request", async t => {
   const f = await fixture(t); const manager = f.manager(); const call = f.tool(manager);
-  await call(create);
+  await call(spawn);
   const abort = new AbortController();
-  const cancelled = call({ operation: "inspect", name: "worker", wait: true }, abort.signal);
-  const timedOut = call({ operation: "inspect", name: "worker", wait: true, timeout: 0.1 });
-  const surviving = call({ operation: "inspect", name: "worker", wait: true });
+  const cancelled = call({ operation: "wait", name: "worker" }, abort.signal);
+  const timedOut = call({ operation: "wait", name: "worker", timeout: 0.1 });
+  const surviving = call({ operation: "wait", name: "worker" });
   await delay(30); abort.abort();
   const [a, b] = await Promise.all([cancelled, timedOut]);
   assert.equal(a.isError, true); assert.equal(a.details.phase, "cancelled");
   assert.equal(b.isError, true); assert.equal(b.details.phase, "timeout");
   await delay(30); // allow cancellation frames to reach the child before settled
-  assert.deepEqual(await manager.inspect("worker"), { state: "working" });
+  assert.deepEqual(await manager.status("worker"), { state: "working" });
   assert.equal(await f.driver.isRunning(f.paths()), true);
   assert.equal((await f.child().command("stats")).reads, 0);
   await f.child().command("settle", "continued after cancellation");
@@ -170,42 +171,42 @@ test("controlled process: cancel/timeout end only their wait; late settled reads
 
 test("controlled process: disconnect and unexpected exit interrupt wait; launch/cleanup failures never report success", async t => {
   const f = await fixture(t); const manager = f.manager(); const call = f.tool(manager);
-  await call(create);
-  const waiting = call({ operation: "inspect", name: "worker", wait: true });
+  await call(spawn);
+  const waiting = call({ operation: "wait", name: "worker" });
   await delay(30); await f.child().command("disconnect");
   assert.equal((await waiting).isError, true);
   assert.equal(await f.driver.isRunning(f.paths()), true, "connection loss is not process exit");
   assert.equal((await manager.list())[0]!.status.available, false);
-  await manager.destroy("worker");
-  await call(create);
-  const interrupted = call({ operation: "inspect", name: "worker", wait: true });
+  await manager.stop("worker");
+  await call(spawn);
+  const interrupted = call({ operation: "wait", name: "worker" });
   await delay(30);
   f.child().process.kill("SIGKILL"); // this exact test-owned fork only; leaves a stale socket
   await f.child().exited;
   assert.equal((await interrupted).isError, true);
-  await manager.destroy("worker"); // confirms dead endpoint safely cleaned
+  await manager.stop("worker"); // confirms dead endpoint safely cleaned
   f.flags.failStart = true;
-  assert.equal((await call(create)).isError, true);
+  assert.equal((await call(spawn)).isError, true);
   await assert.rejects(readdir(f.paths().runDir), { code: "ENOENT" });
   f.flags.failStart = false;
-  await call(create);
+  await call(spawn);
   f.flags.failStop = true;
-  const failed = await call({ operation: "destroy", name: "worker" });
+  const failed = await call({ operation: "stop", name: "worker" });
   assert.equal(failed.isError, true); assert.equal(failed.details.phase, "error");
   assert.ok(await readFile(f.paths().sessionFile));
   assert.equal(await f.driver.isRunning(f.paths()), true);
   f.flags.failStop = false;
-  await manager.destroy("worker"); await manager.destroy("worker");
+  await manager.stop("worker"); await manager.stop("worker");
 });
 
 test("controlled process: reload retains running child; early stop restores original history idle with no replay; parent names isolated", async t => {
   const f = await fixture(t); const first = f.manager();
-  await first.create(create, f.config);
+  await first.spawn(spawn, f.config);
   const other = f.manager("other-parent");
-  await other.create(create, f.config);
+  await other.spawn(spawn, f.config);
   const otherPid = f.child("worker", "other-parent").process.pid;
-  await assert.rejects(first.create(create, f.config), { code: "EEXIST" });
-  const waiting = first.inspect("worker", true);
+  await assert.rejects(first.spawn(spawn, f.config), { code: "EEXIST" });
+  const waiting = first.wait("worker");
   const rejected = assert.rejects(waiting);
   await first.shutdown("reload"); await rejected;
   assert.equal(await f.driver.isRunning(f.paths()), true);
@@ -221,11 +222,11 @@ test("controlled process: reload retains running child; early stop restores orig
   const restored = f.manager();
   assert.deepEqual(await restored.recover(), [{ name: "worker", connected: true }]);
   assert.equal(f.starts.at(-1)!.override, false);
-  assert.deepEqual(await restored.inspect("worker", true), { state: "idle", reply: null });
+  assert.deepEqual(await restored.wait("worker"), { state: "idle", reply: null });
   assert.deepEqual((await f.child().command("stats")).deliveries, []);
   assert.equal(await readFile(f.paths().sessionFile, "utf8"), original);
-  await restored.destroy("worker");
+  await restored.stop("worker");
   assert.equal(f.child("worker", "other-parent").process.pid, otherPid);
-  assert.deepEqual(await other.inspect("worker"), { state: "working" });
-  await other.destroy("worker");
+  assert.deepEqual(await other.status("worker"), { state: "working" });
+  await other.stop("worker");
 });

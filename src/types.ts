@@ -4,10 +4,12 @@ export type ThinkingLevel = ReturnType<ExtensionAPI["getThinkingLevel"]>;
 
 /** Internal inputs only; not a tool schema or socket protocol. */
 export type SubagentOperation =
-  | { operation: "create"; name: string; prompt: string; provider?: string; model?: string; thinking?: ThinkingLevel; cwd?: string }
-  | { operation: "message"; name: string; prompt: string; followUp?: boolean }
-  | { operation: "inspect"; name?: string; wait?: boolean; timeout?: number }
-  | { operation: "destroy"; name: string };
+  | { operation: "spawn"; name: string; prompt: string; provider?: string; model?: string; thinking?: ThinkingLevel; cwd?: string }
+  | { operation: "send"; name: string; prompt: string; followUp?: boolean }
+  | { operation: "list" }
+  | { operation: "status"; name: string }
+  | { operation: "wait"; name: string; timeout?: number }
+  | { operation: "stop"; name: string };
 
 export type WorkState = "working" | "idle";
 

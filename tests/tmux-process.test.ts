@@ -12,7 +12,7 @@ import { TmuxProcessDriver, tmuxSessionName } from "../src/process-driver.ts";
 import { prepareSocketAddress } from "../src/socket-path.ts";
 const exec = promisify(execFile);
 
-test("controlled tmux: direct argv/env, runtime process discovery, reconnect, SIGTERM awaited, session-only restore and destroy", async t => {
+test("controlled tmux: direct argv/env, runtime process discovery, reconnect, SIGTERM awaited, session-only restore and stop", async t => {
   try { await exec("tmux", ["-V"]); } catch { t.skip("tmux unavailable"); return; }
   if (process.platform !== "linux") { t.skip("Linux /proc required"); return; }
   const root = await mkdtemp(join(tmpdir(), "pi-tmux-"));
@@ -34,7 +34,7 @@ test("controlled tmux: direct argv/env, runtime process discovery, reconnect, SI
     await exec("tmux", ["-S", socket, "kill-server"]).catch(() => {});
     await rm(root, { recursive: true, force: true });
   });
-  await manager.create({ operation: "create", name: paths.name, prompt: "offline only" }, { cwd, provider: "test", model: "no-model", thinking: "high" });
+  await manager.spawn({ operation: "spawn", name: paths.name, prompt: "offline only" }, { cwd, provider: "test", model: "no-model", thinking: "high" });
   assert.equal(await driver.isRunning(paths), true);
   const record = await readFile(paths.sessionFile, "utf8");
   const listing = await exec("tmux", ["-S", socket, "list-sessions", "-F", "#{session_name}"]);
@@ -52,7 +52,7 @@ test("controlled tmux: direct argv/env, runtime process discovery, reconnect, SI
   const resumed = new ParentManager(options);
   assert.deepEqual(await resumed.recover(), [{ name: paths.name, connected: true }]);
   assert.equal(await readFile(paths.sessionFile, "utf8"), record); // No old task replay.
-  await resumed.destroy(paths.name); await resumed.destroy(paths.name);
+  await resumed.stop(paths.name); await resumed.stop(paths.name);
   assert.equal(await driver.isRunning(paths), false);
   await assert.rejects(readFile(paths.sessionFile), { code: "ENOENT" });
   await resumed.shutdown("quit");

@@ -8,7 +8,7 @@ import type { Availability, SubagentOperation } from "./types.ts";
 import { readSessionRecord, sameConfig, thinkingLevels, type EffectiveConfig } from "./session-record.ts";
 import type { ProcessDriver } from "./process-driver.ts";
 
-export type CreateInput = Extract<SubagentOperation, { operation: "create" }>;
+export type SpawnInput = Extract<SubagentOperation, { operation: "spawn" }>;
 export interface BridgeClient { request(method: string, params: JsonValue, options?: RequestOptions): Promise<JsonValue>; close(): Promise<void> }
 export interface ManagerOptions {
   agentDir: string; parentSessionId: string; driver: ProcessDriver;
@@ -21,7 +21,7 @@ const failure = (code: string, message: string) => new SocketTransportError(code
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 const retryable = (error: unknown) => ["ENOENT", "ECONNREFUSED", "CONNECTION_CLOSED"].includes((error as { code?: string }).code ?? "");
 
-export function resolveCreateConfig(input: CreateInput, parent: EffectiveConfig): EffectiveConfig {
+export function resolveSpawnConfig(input: SpawnInput, parent: EffectiveConfig): EffectiveConfig {
   if (typeof input.prompt !== "string" || !input.prompt.trim()) throw new Error("prompt must be nonblank");
   const config = { provider: input.provider ?? parent.provider, model: input.model ?? parent.model,
     thinking: input.thinking ?? parent.thinking, cwd: normalizeAbsolutePath(input.cwd ?? parent.cwd, parent.cwd) };
@@ -129,9 +129,9 @@ export class ParentManager {
       throw error;
     }
   }
-  async create(input: CreateInput, parent: EffectiveConfig, options: RequestOptions = {}): Promise<{ name: string; config: EffectiveConfig; invoked: true }> {
+  async spawn(input: SpawnInput, parent: EffectiveConfig, options: RequestOptions = {}): Promise<{ name: string; config: EffectiveConfig; invoked: true }> {
     const paths = this.paths(input.name); // Validate name before any work.
-    const config = resolveCreateConfig(input, parent); // Snapshot at invocation, not after queued work.
+    const config = resolveSpawnConfig(input, parent); // Snapshot at invocation, not after queued work.
     const signal = this.signal(options.signal);
     return this.mutate(input.name, async () => {
       this.check(signal);
@@ -176,22 +176,26 @@ export class ParentManager {
           await cleanupStaleSocket(paths.runDir, this.options.transport);
           if (await this.assertDirectory(paths)) await rm(paths.runDir, { recursive: true, force: true });
         } catch (cleanupError) {
-          throw new AggregateError([error, cleanupError], `Create failed: ${errorText(error)}; cleanup incomplete: ${errorText(cleanupError)}`);
+          throw new AggregateError([error, cleanupError], `Spawn failed: ${errorText(error)}; cleanup incomplete: ${errorText(cleanupError)}`);
         }
         throw error;
       }
     });
   }
-  async message(name: string, prompt: string, followUp = false, options: RequestOptions = {}): Promise<MessageResult> {
+  // Intentionally retain wire message/inspect so a reloaded parent can reconnect to still-running old child bridges.
+  async send(name: string, prompt: string, followUp = false, options: RequestOptions = {}): Promise<MessageResult> {
     return await this.request(name, "message", { prompt, followUp }, options) as MessageResult;
   }
-  async inspect(name: string, wait = false, options: RequestOptions = {}): Promise<InspectResult> {
-    return await this.request(name, "inspect", { wait }, { ...options, timeoutMs: options.timeoutMs ?? (wait ? 1_800_000 : 1000) }) as InspectResult;
+  async status(name: string, options: RequestOptions = {}): Promise<InspectResult> {
+    return await this.request(name, "inspect", { wait: false }, { ...options, timeoutMs: options.timeoutMs ?? 1000 }) as InspectResult;
+  }
+  async wait(name: string, options: RequestOptions = {}): Promise<InspectResult> {
+    return await this.request(name, "inspect", { wait: true }, { ...options, timeoutMs: options.timeoutMs ?? 1_800_000 }) as InspectResult;
   }
   async list(options: RequestOptions = {}): Promise<Array<{ name: string; status: Availability }>> {
     const paths = await scanSubagents(this.options.agentDir, this.options.parentSessionId);
     return Promise.all(paths.map(async ({ name }) => {
-      try { const result = await this.inspect(name, false, options); return { name, status: { available: true, workState: result.state } as Availability }; }
+      try { const result = await this.status(name, options); return { name, status: { available: true, workState: result.state } as Availability }; }
       catch (error) { return { name, status: { available: false, reason: "connection-error", error: { message: errorText(error) } } as Availability }; }
     }));
   }
@@ -230,7 +234,7 @@ export class ParentManager {
       } catch (error) { return { name: path.name, connected: false, error: errorText(error) }; }
     }).catch(error => ({ name: path.name, connected: false, error: errorText(error) }))));
   }
-  async destroy(name: string, options: RequestOptions = {}): Promise<void> {
+  async stop(name: string, options: RequestOptions = {}): Promise<void> {
     const paths = this.paths(name);
     const signal = this.signal(options.signal);
     this.check(signal);

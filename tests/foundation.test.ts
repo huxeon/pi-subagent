@@ -29,22 +29,33 @@ test("default entry is a side-effect-free factory; internal types", () => {
     if (key === "registerTool") return (tool: { name: string }) => { tools.push(tool.name); };
     throw new Error("Factory must only register lifecycle events and the tool");
   } }) as ExtensionAPI;
-  assert.equal(extension(pi), undefined);
+  const previousRunDir = process.env.PI_SUBAGENT_RUN_DIR;
+  try {
+    // This test exercises the parent factory even when run from a child agent.
+    delete process.env.PI_SUBAGENT_RUN_DIR;
+    assert.equal(extension(pi), undefined);
+  } finally {
+    if (previousRunDir === undefined) delete process.env.PI_SUBAGENT_RUN_DIR;
+    else process.env.PI_SUBAGENT_RUN_DIR = previousRunDir;
+  }
   assert.deepEqual(events, ["session_start", "session_shutdown", "session_start"]);
   assert.deepEqual(commands, ["subagent"]);
   assert.deepEqual(tools, ["subagent"]);
   const operations: SubagentOperation[] = [
-    { operation: "create", name: "a", prompt: "p", thinking: "high" },
-    { operation: "message", name: "a", prompt: "p", followUp: true },
-    { operation: "inspect", wait: true, timeout: 1 },
-    { operation: "destroy", name: "a" },
+    { operation: "spawn", name: "a", prompt: "p", thinking: "high" },
+    { operation: "send", name: "a", prompt: "p", followUp: true },
+    { operation: "list" },
+    { operation: "status", name: "a" },
+    { operation: "wait", name: "a", timeout: 1 },
+    { operation: "stop", name: "a" },
   ];
   const observations: Availability[] = [
     { available: true, workState: "working" }, { available: true, workState: "idle" },
     { available: false, reason: "stopped" },
     { available: false, reason: "connection-error", error: { code: "ECONNREFUSED", message: "offline" } },
   ];
-  assert.equal(operations.length, observations.length);
+  assert.deepEqual(operations.map(input => input.operation), ["spawn", "send", "list", "status", "wait", "stop"]);
+  assert.equal(observations.length, 4);
 });
 
 test("names preserve exact identity, canonical reversible mapping, no traversal or collisions", () => {

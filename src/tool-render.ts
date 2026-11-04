@@ -21,10 +21,13 @@ function capped(rows: string[], limit: number, expanded: boolean, width: number,
 }
 function pending(p: SubagentInput): string {
   switch (p.operation) {
-    case "create": return "Creating...";
-    case "message": return "Delivering...";
-    case "destroy": return "Destroying...";
-    default: return p.wait ? "Waiting for completion..." : "Inspecting...";
+    case "spawn": return "Spawning...";
+    case "send": return "Delivering...";
+    case "list": return "Listing subagents...";
+    case "status": return "Checking status...";
+    case "wait": return "Waiting for completion...";
+    case "stop": return "Stopping...";
+    default: return "Operation in progress...";
   }
 }
 function status(value: Availability): string {
@@ -44,20 +47,20 @@ export function card(p: SubagentInput, details: ToolDetails | undefined, context
       const hint = context.keyHint("app.tools.expand", "to expand") || "expand to view full content";
       const operationText = typeof p.operation === "string" ? ` ${safe(p.operation)}` : "";
       const options: string[] = [];
-      if (p.operation === "message" && p.followUp === true) {
+      if (p.operation === "send" && p.followUp === true) {
         options.push("follow-up");
-      } else if (p.operation === "inspect" && p.wait === true) {
-        options.push("wait", `timeout ${p.timeout ?? 1800}s`);
+      } else if (p.operation === "wait") {
+        options.push(`timeout ${p.timeout ?? 1800}s`);
       }
       const nameText = typeof p.name === "string" ? ` ${safe(p.name)}` : "";
       const optionText = options.length ? theme.fg("muted", safe(` (${options.join(", ")})`)) : "";
       const title = theme.fg("toolTitle", theme.bold("subagent") + operationText) + nameText + optionText;
       let output = new Text(title, 0, 0).render(width).map(line => truncateToWidth(line, width));
-      if ((p.operation === "create" || p.operation === "message") && typeof p.prompt === "string") {
+      if ((p.operation === "spawn" || p.operation === "send") && typeof p.prompt === "string") {
         const prompt = capped(lines(p.prompt, Math.max(1, width - 2)), 3, expanded, Math.max(1, width - 2), hint);
         output = output.concat(prompt.map(line => truncateToWidth(`  ${line}`, width)));
       }
-      if (p.operation === "create") {
+      if (p.operation === "spawn") {
         const cwd = details?.config?.cwd ?? resolve(context.cwd, typeof p.cwd === "string" && !p.cwd.includes("\0") ? p.cwd : ".");
         output = output.concat(lines(`  cwd: ${cwd}`, width));
       }
@@ -71,42 +74,48 @@ export function card(p: SubagentInput, details: ToolDetails | undefined, context
         else add(pending(p));
       } else if (details.phase === "running") add(pending(p));
       else if (details.phase === "cancelled") {
-        add(p.operation === "inspect" && p.wait ? "Wait cancelled. Subagent continues running." : "Operation cancelled. Some effects may already have occurred.");
+        add(p.operation === "wait" ? "Wait cancelled. Subagent continues running." : "Operation cancelled. Some effects may already have occurred.");
       } else if (details.phase === "timeout" || details.phase === "error") {
         const error = details.error;
-        if (details.phase === "timeout" && error?.code === "TIMEOUT" && p.operation === "inspect" && p.wait) add(`✗ Wait timed out after ${p.timeout ?? 1800}s. Subagent continues running.`, "error");
+        if (details.phase === "timeout" && error?.code === "TIMEOUT" && p.operation === "wait") add(`✗ Wait timed out after ${p.timeout ?? 1800}s. Subagent continues running.`, "error");
         else if (["CONNECTION_CLOSED", "ECONNRESET", "EPIPE"].includes(error?.code ?? "")) add("✗ Connection lost. Subagent status is unknown.", "error");
         else add(`✗ ${error?.message ?? "Operation failed."}`, "error");
       } else {
         switch (p.operation) {
-          case "create": {
+          case "spawn": {
             const c = details.config;
-            add(c ? `✓ Created · ${c.provider}/${c.model}:${c.thinking}` : "✗ Missing creation configuration.", c ? "success" : "error"); break;
+            add(c ? `✓ Spawned · ${c.provider}/${c.model}:${c.thinking}` : "✗ Missing spawn configuration.", c ? "success" : "error"); break;
           }
-          case "message": add("✓ Delivered", "success"); break;
-          case "destroy": add("✓ Destroyed · session data deleted", "success"); break;
-          case "inspect": {
-            if (Array.isArray(details.data)) {
-              const items = details.data;
-              const nameWidth = Math.min(24, Math.max(0, ...items.map(item => visibleWidth(safe(item.name)))));
-              add(items.length ? items.map(item => `${item.name}${" ".repeat(Math.max(2, nameWidth - visibleWidth(safe(item.name)) + 2))}${status(item.status)}`).join("\n") : "No subagents.");
-            } else {
-              const data = details.data as InspectResult | undefined;
-              if (!p.wait) add(data?.state ?? "Status unavailable.");
-              if (p.wait) {
-                const reply = data && "reply" in data ? data.reply : null;
-                if (reply?.stopReason === "error") { add(`✗ Assistant error${reply.errorMessage ? `: ${reply.errorMessage}` : "."}`, "error"); output.push(""); }
-                else if (reply?.stopReason === "aborted") { add(`Assistant response aborted.${reply.errorMessage ? ` ${reply.errorMessage}` : ""}`, "warning"); output.push(""); }
-                else if (reply?.errorMessage) { add(`✗ ${reply.errorMessage}`, "error"); output.push(""); }
-                if (reply?.text) {
-                  const text = safe(reply.text);
-                  if (markdownText !== text) { markdownText = text; markdown = new Markdown(text, 0, 0, getMarkdownTheme()); }
-                  output = output.concat(capped(markdown!.render(width).map(row => truncateToWidth(row, width)), 10, expanded, width, hint));
-                } else add("No assistant reply.");
-              }
-            }
+          case "send": add("✓ Delivered", "success"); break;
+          case "stop": add("✓ Stopped · session data deleted", "success"); break;
+          case "list": {
+            const items = Array.isArray(details.data) ? details.data : [];
+            const nameWidth = Math.min(24, Math.max(0, ...items.map(item => visibleWidth(safe(item.name)))));
+            add(items.length ? items.map(item => `${item.name}${" ".repeat(Math.max(2, nameWidth - visibleWidth(safe(item.name)) + 2))}${status(item.status)}`).join("\n") : "No subagents.");
             break;
           }
+          case "status": {
+            const data = details.data as InspectResult | undefined;
+            add(data?.state ?? "Status unavailable.");
+            break;
+          }
+          case "wait": {
+            const data = details.data as InspectResult | undefined;
+            const reply = data && "reply" in data ? data.reply : null;
+            if (reply?.stopReason === "error") { add(`✗ Assistant error${reply.errorMessage ? `: ${reply.errorMessage}` : "."}`, "error"); output.push(""); }
+            else if (reply?.stopReason === "aborted") { add(`Assistant response aborted.${reply.errorMessage ? ` ${reply.errorMessage}` : ""}`, "warning"); output.push(""); }
+            else if (reply?.errorMessage) { add(`✗ ${reply.errorMessage}`, "error"); output.push(""); }
+            if (reply?.text) {
+              const text = safe(reply.text);
+              if (markdownText !== text) { markdownText = text; markdown = new Markdown(text, 0, 0, getMarkdownTheme()); }
+              output = output.concat(capped(markdown!.render(width).map(row => truncateToWidth(row, width)), 10, expanded, width, hint));
+            } else add("No assistant reply.");
+            break;
+          }
+          default:
+            // Historical calls keep their stored content readable without
+            // accepting legacy operation names in the executable tool schema.
+            add(fallback || "Result unavailable.");
         }
       }
       return output.map(row => truncateToWidth(row, width));

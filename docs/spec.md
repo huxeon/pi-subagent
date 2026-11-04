@@ -53,16 +53,23 @@ flowchart LR
 
 ## 4. 工具接口
 
-注册单一工具 `subagent`，通过操作字段区分以下四种操作。具体 schema 字段名和返回结构在实现时确定。
+注册单一工具 `subagent`，通过 `operation` 字段区分以下六种操作。本节与第 10 节定义当前接口与展示要求；其余协作架构、数据与生命周期语义保持不变。
 
-| 操作 | 参数 | 行为 |
+| 操作 | 参数（`?` 表示可选） | 行为 |
 | --- | --- | --- |
-| `create` | `name, prompt, provider?, model?, thinking?, cwd?` | 创建协作者并提交初始任务 |
-| `message` | `name, prompt, followUp?` | 向已有协作者提交输入 |
-| `inspect` | `name?, wait?, timeout?` | 列表、查看或等待工作结束 |
-| `destroy` | `name` | 停止进程并删除全部运行记录 |
+| `spawn` | `name, prompt, provider?, model?, thinking?, cwd?` | 创建协作者并提交初始任务，不等待工作完成 |
+| `send` | `name, prompt, followUp?` | 向已有协作者提交输入，沿用原投递语义 |
+| `list` | 无 | 列出当前父会话的协作者及概览状态，不附带 assistant 回复 |
+| `status` | `name` | 立即仅返回指定协作者的 working/idle，不读取或返回 assistant 回复 |
+| `wait` | `name, timeout?` | 等待 idle，返回状态及当前分支最近 assistant 回复（可能为 null）；已 idle 则立即返回 |
+| `stop` | `name` | 安全停止进程并永久删除整个运行目录及 session，不归档、不保留历史 |
 
-### 4.1 create
+- 除 `list` 外，所有操作的 `name` 必填；`list` 仅接受 `operation`，无额外字段。
+- 工具接口不再接受 `wait` 布尔参数；`timeout` 仅用于 `wait`。不属于当前操作的参数及未知字段均拒绝。
+- 不保留旧操作别名。原 `create` → `spawn`，`message` → `send`，无 name 的 `inspect` → `list`，有 name 且不等待的 `inspect` → `status`，等待型 `inspect` → `wait`，`destroy` → `stop`。
+- 父公开 manager 方法对应 `spawn/send/status/wait/list/stop`；这是公开接口拆分，不是 socket 协议改名。底层 wire methods 仍为 `identity/message/inspect`，详见第 7.2 节。
+
+### 4.1 spawn
 
 创建独立 tmux session 和子 Pi，等待控制桥可用，提交初始 prompt。返回创建与投递结果，不等待工作完成。
 
@@ -76,7 +83,7 @@ sequenceDiagram
     participant B as 子代理控制桥
     participant P as 子 Pi
 
-    M->>T: create(name, prompt, 配置覆盖)
+    M->>T: spawn(name, prompt, 配置覆盖)
     T->>T: 校验名称唯一性，解析继承配置
     T->>T: 创建运行目录，计算 socket 地址
     T->>X: 创建独立 session，启动子 Pi
@@ -91,7 +98,7 @@ sequenceDiagram
     Note over M,P: 不等待初始工作完成
 ```
 
-### 4.2 message
+### 4.2 send
 
 `followUp` 默认 `false`：
 
@@ -108,8 +115,8 @@ sequenceDiagram
     participant B as 子代理控制桥
     participant P as 子 Pi
 
-    M->>T: message(name, prompt, followUp?)
-    T->>B: 通过 socket 提交输入
+    M->>T: send(name, prompt, followUp?)
+    T->>B: message（通过 socket 提交输入）
     alt 子 Pi 空闲
         B->>P: pi.sendUserMessage(prompt)
     else 忙碌且 followUp=false
@@ -122,16 +129,21 @@ sequenceDiagram
     T-->>M: 返回投递结果
 ```
 
-### 4.3 inspect
+### 4.3 list
 
-- 不指定 `name`：列出当前父会话的协作者及概览状态。
-- 指定 `name` 且 `wait=false`：立即仅返回状态，不附带 assistant 回复。
-- 指定 `name` 且 `wait=true`：返回空闲状态及最新 assistant 回复；请求时已经 idle 则立即返回。
-- `wait=true` 必须指定 `name`。
-- `timeout` 单位为秒，只用于等待，默认 **1800 秒**，与参考实现一致。
-- 结果来自 Pi 会话，不抓取 tmux 屏幕。
+不接受除 `operation` 外的任何字段。列出当前父会话的协作者及概览状态，不读取或返回 assistant 回复。不可连接等信息属于父侧管理信息，不是第三种工作状态。
 
-等待采用最简单的语义：idle 立即返回；working 登记本次请求，等待 `agent_settled` 后返回。暂不为 message 后紧接 inspect 的极短时序窗口增加额外记账。
+### 4.4 status
+
+必须指定 `name`，立即仅返回该协作者的 working/idle，不读取或返回 assistant 回复，也不等待工作结束。连接失败或子进程退出须报告错误，不能以旧快照冒充在线状态。
+
+### 4.5 wait
+
+- 必须指定 `name`，返回 idle 状态及当前分支最近 assistant 回复（可能为 null）；请求时已经 idle 则立即返回。
+- `timeout` 单位为秒，仅用于 `wait`，默认 **1800 秒**，范围 `0.001–2147483.647`，精度为整毫秒，保持原等待操作的范围与精度。
+- 结果来自 Pi 会话，不抓取 tmux 屏幕；保留最近回复的 `stopReason`、`errorMessage`，不跳过空的 error/aborted 回复，也不输出 thinking。
+
+等待采用最简单的语义：idle 立即返回；working 登记本次请求，等待 `agent_settled` 且确认实际 idle 后返回。暂不为 send 后紧接 status/wait 的极短 idle 时序窗口增加额外记账。
 
 ```mermaid
 sequenceDiagram
@@ -140,8 +152,8 @@ sequenceDiagram
     participant B as 子代理控制桥
     participant P as 子 Pi
 
-    M->>T: inspect(name, wait=true, timeout?)
-    T->>B: 请求 inspect
+    M->>T: wait(name, timeout?)
+    T->>B: inspect（wire 内部启用等待）
     alt 子代理 idle
         B-->>T: 立即返回状态和最新回复
     else 子代理 working
@@ -155,7 +167,7 @@ sequenceDiagram
 
 #### 取消与超时
 
-取消或超时只结束本次 inspect，不停止子代理，不调用其 abort，不清空 steer 或 follow-up。
+取消或超时只结束本次 wait，不停止子代理，不调用其 abort，不清空 steer 或 follow-up。
 
 子侧必须移除对应等待记录，之后 `agent_settled` 不再为该请求生成响应。连接断开时也清理该连接所属的等待请求。取消和完成同时发生时，按请求已完成或已取消处理，不重复响应。
 
@@ -166,7 +178,7 @@ sequenceDiagram
     participant B as 子代理控制桥
     participant P as 子 Pi
 
-    T->>B: inspect(wait=true)
+    T->>B: inspect（wire 内部启用等待）
     B->>B: working，登记等待请求
     C->>T: 取消本次等待
     T->>B: 取消对应请求
@@ -178,9 +190,11 @@ sequenceDiagram
 
 连接断开或子代理停止不能当作成功完成；父侧应结束等待并明确报告中断或连接错误。
 
-### 4.4 destroy
+### 4.6 stop
 
-停止子 Pi 及对应 tmux session，清理 socket，删除整个子代理运行目录，包括 `session.jsonl`。不归档、不保留历史。已停止但仍有记录的协作者也可以销毁。
+停止子 Pi 及对应 tmux session，清理 socket，永久删除整个子代理运行目录，包括 `session.jsonl`。不归档、不保留历史。已停止但仍有记录的协作者也可以通过 stop 删除。stop 不是保留历史的暂停，不能通过恢复父会话找回；父会话中已写入的工具结果不随之删除。
+
+沿用安全停止与取消语义：向可确认归属的 Pi 发 SIGTERM，等待退出及异步清理后才清理 tmux/socket；默认等 10 秒，不自动 SIGKILL，无法安全确认或停止时保留资源并报错。spawn 取消时尝试回滚自有新资源；stop 取消时已开始的 graceful stop 必须先安全结束，并尽可能保留历史，但已开始的删除不支持事务回滚。清理不完整须明确报错。
 
 ```mermaid
 sequenceDiagram
@@ -189,7 +203,7 @@ sequenceDiagram
     participant X as tmux / 子 Pi
     participant F as 文件系统
 
-    M->>T: destroy(name)
+    M->>T: stop(name)
     T->>X: 若仍运行则停止对应子代理
     X-->>T: 进程结束
     T->>F: 清理残留 socket
@@ -223,7 +237,7 @@ sequenceDiagram
 - 不创建 `metadata.json`、inbox、回复副本或工作状态文件。
 - 不持久化 PID、连接、等待请求或内部请求编号。
 
-持久化目标仅为停止后重新加载协作者，不恢复执行现场。正在运行的工具、尚未写入会话的内存排队消息、等待中的 inspect 请求不保证跨进程重启保留。
+持久化目标仅为父退出或切换会话时保留历史、之后重新加载协作者，不恢复执行现场；不适用于永久删除数据的工具 stop。正在运行的工具、尚未写入会话的内存排队消息、等待中的 wait 请求不保证跨进程重启保留。
 
 ## 7. Unix socket
 
@@ -253,7 +267,9 @@ $XDG_RUNTIME_DIR/pi-subagent/<hash>.sock
 - socket 文件存在不代表进程存活。
 - 父扩展重载只需重新连接，不必重启子代理。
 - 请求/响应、取消和连接关闭处理采用最小协议；不引入通用消息总线。
-- inspect 的等待通知是原 socket 请求的延迟响应，不需子代理反向连接父代理。
+- **底层 socket wire methods 保持 `identity/message/inspect` 不变**，使父扩展 `/reload` 后可连接仍使用旧协议的子进程；不得因公开操作改名而把 wire 改成 `send/status/wait` 等。
+- 父公开 manager 方法为 `spawn/send/status/wait/list/stop`。`send` 仍使用 wire `message`；`status`、`wait` 与列表/界面的在线状态查询仍使用 wire `inspect`。wire 内部原有的等待参数及取消机制保留，工具层删除 `wait` 布尔参数不影响它。
+- wait 的等待通知仍是原 wire `inspect` 请求的延迟响应，不需子代理反向连接父代理。
 
 ## 8. 父会话生命周期
 
@@ -287,7 +303,7 @@ sequenceDiagram
 
 恢复父会话时扫描其子代理目录。若已有可连接的子代理则重新连接；否则检查旧进程与残留 socket，再从对应会话启动子 Pi。
 
-重新启动的子代理加载历史，以空闲状态等待新消息，不自动续跑被中断的任务。不保存原来的 inspect 等待请求。
+重新启动的子代理加载历史，以空闲状态等待新消息，不自动续跑被中断的任务。不保存原来的 wait 等待请求。
 
 ```mermaid
 sequenceDiagram
@@ -327,7 +343,7 @@ sequenceDiagram
 - 单个子代理不可连接时注明不可用，不阻塞其他条目的更新。
 - 查询设短超时；上一轮刷新未结束时不叠加下一轮。
 - 父会话启动时启用刷新，退出、切换或重载时清理定时器、UI 连接和 widget，避免重复刷新或使用旧上下文。
-- UI 状态快照不持久化，不作为工具 inspect 的权威来源。
+- UI 状态快照不持久化，不作为工具 list/status 的权威来源。
 
 ### 9.2 `/subagent` 选择进入
 
@@ -370,131 +386,160 @@ sequenceDiagram
     end
 ```
 
-UI 状态刷新不改变 `inspect(wait=true)` 的事件驱动等待机制；本阶段不增加 socket 状态订阅协议。
+UI 状态刷新不改变工具 `wait`（底层 wire `inspect`）的事件驱动等待机制；本阶段不增加 socket 状态订阅协议。
 
 ## 10. 工具调用展示
 
 ### 10.1 通用规则
 
 - 工具卡片的标题、状态和提示使用英文；输入 prompt 和子代理回复保持原文，不翻译。
-- 调用标题以 `subagent 操作 名称`（如 `subagent create reviewer`）展示。仅工具名 `subagent` 加粗，操作名保持普通字重，两者使用 `toolTitle` 主题色；子代理名称仅用空格分隔，使用普通文本样式，不加粗、不使用 accent 高亮，不添加圆点或文件链接。`follow-up` 等参数保持普通字重。调用中与结果卡片使用相同标题样式。
-- create 不在标题中额外展示可选配置，沿用 cwd 行与底部配置结果。message 仅在 `followUp=true` 时附加 `(follow-up)`；inspect 仅在 `wait=true` 时附加 `(wait, timeout XXs)`，XX 为有效超时秒数，省略 timeout 时显示默认 1800。false 或未启用时不显示标签。括号及其中的参数使用 `muted` 主题色、保持普通字重，与内置 bash 工具的 timeout 后缀样式一致。
+- 调用标题以 `subagent 操作 名称`（如 `subagent spawn reviewer`）展示。仅工具名 `subagent` 加粗，操作名保持普通字重，两者使用 `toolTitle` 主题色；子代理名称仅用空格分隔，使用普通文本样式，不加粗、不使用 accent 高亮，不添加圆点或文件链接。`follow-up` 等参数保持普通字重。调用中与结果卡片使用相同标题样式。
+- spawn 不在标题中额外展示可选配置，沿用 cwd 行与底部配置结果。send 仅在 `followUp=true` 时附加 `(follow-up)`，false 或省略时不显示标签。wait 标题为 `subagent wait 名称 (timeout XXs)`，XX 为有效超时秒数，省略 timeout 时显示默认 1800；操作名已是 wait，不重复添加 `(wait, ...)`。list 无名称或参数后缀，status 仅显示指定名称。括号及其中的参数使用 `muted` 主题色、保持普通字重，与内置 bash 工具的 timeout 后缀样式一致。
 - 调用信息与执行结果之间使用空行分隔。
 - 成功结果使用 `✓`，错误和等待超时使用 `✗`。
 - `working`、`idle` 不加成功标记：工作空闲不代表任务成功。
-- 用户主动取消等待不视为执行错误，不加 `✗`。
+- 用户主动取消等待在卡片中中性显示，不加 `✗`；取消/超时的工具执行结果仍标记 `isError:true`，避免被模型误认为获得了完成结果。
 - 默认紧凑展示，长 prompt 显示摘要，展开查看完整内容。回复使用 Markdown 渲染，默认限制高度，展开查看完整内容。
 - 展示层不得把消息投递成功表达为任务完成，也不得掩盖回复中的错误或中止信息。
 
-### 10.2 create
+### 10.2 spawn
 
-调用中保留任务摘要与实际生效的 cwd（包括继承值），底部显示 `Creating...`：
+调用中保留任务摘要与实际生效的 cwd（包括继承值），底部显示 `Spawning...`：
 
 ```text
-subagent create reviewer
+subagent spawn reviewer
   Review the current changes, focusing on error handling.
   cwd: /home/huxeon/workspaces/pi-subagent
 
-Creating...
+Spawning...
 ```
 
 成功后只替换底部状态，其他内容保持不变。底部使用实际生效的 provider、model、thinking：
 
 ```text
-subagent create reviewer
+subagent spawn reviewer
   Review the current changes, focusing on error handling.
   cwd: /home/huxeon/workspaces/pi-subagent
 
-✓ Created · provider/model:thinking
+✓ Spawned · provider/model:thinking
 ```
 
 展开后可查看完整 prompt；不额外列出 provider、model、thinking，它们已在底部结果中展示。cwd 行保持不变。
 
-### 10.3 message
+### 10.3 send
 
-不根据运行时状态显示 `prompt` 或 `steer`；仅在 `followUp=true` 时在调用行显示 `(follow-up)`，false 或省略时不显示。调用已发起后底部统一显示 `✓ Delivered`，不区分 Delivered / Queued。这里的 `Delivered` 仅表示已调用 Pi 输入 API，不是消息已接受、排队、落盘或任务完成的保证。
+不根据运行时状态显示 `prompt` 或 `steer`；仅在 `followUp=true` 时在调用行显示 `(follow-up)`，false 或省略时不显示。调用中显示 `Delivering...`：
 
 ```text
-subagent message reviewer
+subagent send reviewer
+  Also check cancellation handling.
+
+Delivering...
+```
+
+调用已发起后底部统一显示 `✓ Delivered`，不区分 Delivered / Queued。这里的 `Delivered` 仅表示已调用 Pi 输入 API，不是消息已接受、排队、落盘或任务完成的保证。
+
+```text
+subagent send reviewer
   Also check cancellation handling.
 
 ✓ Delivered
 ```
 
 ```text
-subagent message reviewer (follow-up)
+subagent send reviewer (follow-up)
   Summarize the findings after finishing the review.
 
 ✓ Delivered
 ```
 
-### 10.4 inspect
+### 10.4 list
 
-不指定 name，列表结果与调用行空一行：
+无 name 或其他额外字段；调用中显示 `Listing subagents...`：
 
 ```text
-subagent inspect
+subagent list
+
+Listing subagents...
+```
+
+完成后列出当前父会话的协作者及概览状态，不附带 assistant 回复。列表结果与调用行空一行，working/idle 不加成功标记；不可用信息不作为第三种工作状态：
+
+```text
+subagent list
 
 reviewer       working
 implementer    idle
 ```
 
-指定 name 且不等待，仅显示状态，不附带最新回复：
+### 10.5 status
+
+指定 name；调用中显示 `Checking status...`：
 
 ```text
-subagent inspect reviewer
+subagent status reviewer
+
+Checking status...
+```
+
+查询完成后仅显示该协作者的当前状态，不等待工作结束，不读取或附带最新回复，不加成功标记：
+
+```text
+subagent status reviewer
 
 working
 ```
 
-等待期间：
+### 10.6 wait
+
+指定 name；等待期间：
 
 ```text
-subagent inspect reviewer (wait, timeout 1800s)
+subagent wait reviewer (timeout 1800s)
 
 Waiting for completion...
 ```
 
-等待完成（或 wait=true 请求时已经 idle）后，不再展示工作状态，调用行与回复用空行分隔。仅调整工具卡片展示，不改变协议中的状态信息：
+等待完成（或 wait 请求时已经 idle）后，不再展示工作状态，调用行与回复用空行分隔，回复使用 Markdown。仅调整工具卡片展示，不改变返回结果中的状态信息；最近回复为 null 时不得伪造回复或任务成功：
 
 ```text
-subagent inspect reviewer (wait, timeout 1800s)
+subagent wait reviewer (timeout 1800s)
 
 Found two issues:
 1. …
 2. …
 ```
 
-### 10.5 destroy
+### 10.7 stop
 
 调用中：
 
 ```text
-subagent destroy reviewer
+subagent stop reviewer
 
-Destroying...
+Stopping...
 ```
 
-成功后：
+成功后明确已永久删除 session 数据，而非仅暂停：
 
 ```text
-subagent destroy reviewer
+subagent stop reviewer
 
-✓ Destroyed · session data deleted
+✓ Stopped · session data deleted
 ```
 
-### 10.6 错误、超时与取消
+### 10.8 错误、超时与取消
 
 错误结果与调用信息用空行分隔，底部以 `✗` 开头，例如：
 
 ```text
-subagent create reviewer
+subagent spawn reviewer
 
 ✗ A subagent named "reviewer" already exists.
 ```
 
 ```text
-subagent inspect reviewer
+subagent status reviewer
 
 ✗ Connection lost. Subagent status is unknown.
 ```
@@ -502,7 +547,7 @@ subagent inspect reviewer
 等待超时：
 
 ```text
-subagent inspect reviewer (wait, timeout 1800s)
+subagent wait reviewer (timeout 1800s)
 
 ✗ Wait timed out after 1800s. Subagent continues running.
 ```
@@ -510,7 +555,7 @@ subagent inspect reviewer (wait, timeout 1800s)
 主动取消等待：
 
 ```text
-subagent inspect reviewer (wait, timeout 1800s)
+subagent wait reviewer (timeout 1800s)
 
 Wait cancelled. Subagent continues running.
 ```
@@ -539,5 +584,7 @@ Wait cancelled. Subagent continues running.
 5. 正常停止 Pi/tmux 时的会话落盘与 socket 清理行为。
 6. 协议分帧、请求取消、超时、错误结构和工具输出大小限制。
 7. 名称校验或编码、运行目录规范化、tmux 名称派生与启动失败清理。
+
+六操作迁移的 schema、公开 manager 方法、卡片展示及既有安全/取消语义已由受控测试覆盖；当前默认测试 82/82 通过、无跳过，类型检查通过。两项离线 Pi 探针已重跑通过，包括父 manager 同 PID 重连、子 reload、历史恢复及 stop 永久删除；底层 wire 未改变，受控测试验证新 manager 沿用 `message/inspect`。详细范围见 README 的“当前验证范围与限制”。真实模型完整链路、真实父生命周期端到端与人工 TUI 等未验收范围仍然保留，不能用受控测试或离线探针替代。
 
 若验证发现现有假设不成立，应先讨论调整，不静默增加 metadata、任务队列或改变恢复语义。

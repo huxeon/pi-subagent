@@ -86,7 +86,7 @@ export function registerParentUi(pi: ExtensionAPI, lifecycle: ReturnType<typeof 
         if (selected === undefined || state.signal.aborted) return;
         // Never enter from a stale UI cache. This is the existing direct query,
         // not another poller; a vanished/unavailable peer fails before handoff.
-        await manager.inspect(selected, false, { timeoutMs: 600, signal: state.signal });
+        await manager.status(selected, { timeoutMs: 600, signal: state.signal });
         if (state.signal.aborted) return;
         const paths = getSubagentPaths(manager.options.agentDir, manager.options.parentSessionId, selected);
         const target = `=${tmuxSessionName(paths.runDir)}`;

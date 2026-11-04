@@ -16,17 +16,17 @@ test("parent command uses existing snapshot, direct revalidation and switch-clie
     const clock: UiClock = { setInterval(callback) { timer = callback; return callback; }, clearInterval() { timer = undefined; } };
     const events = new Map<string, Array<(...args: any[]) => any>>();
     let command!: (args: string, ctx: ExtensionCommandContext) => Promise<void>;
-    let listCalls = 0, inspectCalls = 0, switches = 0;
-    let offline = false, inspectFails = false;
+    let listCalls = 0, statusCalls = 0, switches = 0;
+    let offline = false, statusFails = false;
     let lastWidget: unknown;
     const notifications: string[] = [];
     const manager = {
       options: { agentDir: "/tmp/ui-test-not-created", parentSessionId: "parent" },
       async recover() { return []; },
       async list(): Promise<UiEntry[]> { listCalls++; return [{ name: "中文", status: offline ? { available: false, reason: "unavailable" } : { available: true, workState: "working" } }]; },
-      async inspect(name: string, wait: boolean, options: { timeoutMs: number }) {
-        assert.equal(name, "中文"); assert.equal(wait, false); assert.equal(options.timeoutMs, 600);
-        inspectCalls++; if (inspectFails) throw new Error("gone before enter"); return { state: "idle" };
+      async status(name: string, options: { timeoutMs: number }) {
+        assert.equal(name, "中文"); assert.equal(options.timeoutMs, 600);
+        statusCalls++; if (statusFails) throw new Error("gone before enter"); return { state: "idle" };
       },
       async shutdown(reason: string) { assert.equal(reason, "reload"); assert.equal(timer, undefined); assert.equal(lastWidget, undefined); },
     } as unknown as ParentManager;
@@ -58,13 +58,13 @@ test("parent command uses existing snapshot, direct revalidation and switch-clie
     for (const handler of events.get("session_start")!) await handler({}, ctx);
     await Promise.resolve(); await Promise.resolve();
     await command("", ctx);
-    assert.equal(listCalls, 1); assert.equal(inspectCalls, 1); assert.equal(switches, 1);
-    inspectFails = true; await command("", ctx);
+    assert.equal(listCalls, 1); assert.equal(statusCalls, 1); assert.equal(switches, 1);
+    statusFails = true; await command("", ctx);
     assert.equal(switches, 1); assert.match(notifications.at(-1)!, /gone before enter/);
     // Confirming an unavailable row keeps the picker open. Then cancel via a
     // configured cancellation key rather than accidentally entering that row.
     offline = true; timer!(); await Promise.resolve(); await Promise.resolve();
-    action = "\x1b"; await command("", ctx); assert.equal(inspectCalls, 2);
+    action = "\x1b"; await command("", ctx); assert.equal(statusCalls, 2);
     action = "";
     const pendingCommand = command("", ctx); // Leave a live picker open during reload.
     await Promise.resolve(); await Promise.resolve();

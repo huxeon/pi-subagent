@@ -73,8 +73,8 @@ export default function(pi) {
   let client = await SocketClient.connect(paths.runDir, { address: { xdgRuntimeDir: xdg } });
   const identity = await client.request('identity', {}); await client.close();
   assert.equal(identity.cwd, root); assert.equal(identity.model, 'gpt-5'); assert.equal(identity.thinking, 'high');
-  assert.deepEqual(await current.inspect('real-Pi', false), { state: 'idle' });
-  assert.deepEqual(await current.inspect('real-Pi', true), { state: 'idle', reply: null });
+  assert.deepEqual(await current.status('real-Pi'), { state: 'idle' });
+  assert.deepEqual(await current.wait('real-Pi'), { state: 'idle', reply: null });
   await until(async () => (await observations()).length > 0);
   const start = (await observations())[0];
   assert(!start.tools.includes('subagent')); assert(!start.commands.includes('subagent'));
@@ -92,7 +92,7 @@ export default function(pi) {
   await until(async () => (await observations()).some(item => item.reason === 'reload'));
   await current.shutdown('reload'); current = manager();
   assert.deepEqual(await current.recover(), [{ name: 'real-Pi', connected: true }]);
-  assert.deepEqual(await current.inspect('real-Pi'), { state: 'idle' });
+  assert.deepEqual(await current.status('real-Pi'), { state: 'idle' });
   console.log('PASS real child /reload closes/reopens production bridge without duplicate bind');
   await current.shutdown('quit');
   assert.equal(await driver.isRunning(paths), false);
@@ -100,13 +100,13 @@ export default function(pi) {
   assert.deepEqual(await readdir(join(xdg, 'pi-subagent')), []);
   current = manager();
   assert.deepEqual(await current.recover(), [{ name: 'real-Pi', connected: true }]);
-  assert.deepEqual(await current.inspect('real-Pi', true), { state: 'idle', reply: null });
-  await current.destroy('real-Pi'); await current.destroy('real-Pi');
+  assert.deepEqual(await current.wait('real-Pi'), { state: 'idle', reply: null });
+  await current.stop('real-Pi'); await current.stop('real-Pi');
   await assert.rejects(readFile(paths.sessionFile), { code: 'ENOENT' });
   assert.equal(await driver.isRunning(paths), false);
   assert.deepEqual(await readdir(join(xdg, 'pi-subagent')), []);
   assert(!(await observations()).some(item => item.unexpectedModelRun));
-  console.log('PASS real Pi graceful stop/history retention, restore idle, destroy all records; no sockets/processes or model runs');
+  console.log('PASS real Pi graceful stop/history retention, restore idle, stop deletes all records; no sockets/processes or model runs');
 } finally {
   for (const manager of managers) await manager.shutdown('quit').catch(() => {});
   if (driver && paths) await driver.stop(paths);

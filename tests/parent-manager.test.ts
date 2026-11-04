@@ -7,7 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import test, { type TestContext } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ChildBridge } from "../src/child-bridge.ts";
-import { ParentManager, resolveCreateConfig } from "../src/parent-manager.ts";
+import { ParentManager, resolveSpawnConfig } from "../src/parent-manager.ts";
 import { registerParentLifecycle } from "../src/parent-lifecycle.ts";
 import { createSubagentDirectory, getSubagentPaths } from "../src/paths.ts";
 import type { ProcessDriver } from "../src/process-driver.ts";
@@ -67,27 +67,27 @@ async function fixture(t: TestContext) {
   const paths = (name: string) => getSubagentPaths(root, "parent", name);
   return { root, xdg, config, transport, manager, options, flags, calls, servers, prompts, busy, bridges, paths };
 }
-const input = (name = "worker") => ({ operation: "create" as const, name, prompt: "original" });
+const input = (name = "worker") => ({ operation: "spawn" as const, name, prompt: "original" });
 
 test("configuration inherits each current parent field independently, relative cwd and validation", async t => {
   const f = await fixture(t);
-  assert.deepEqual(resolveCreateConfig(input(), f.config), f.config);
-  assert.deepEqual(resolveCreateConfig({ ...input(), provider: "q", thinking: "off", cwd: "./dir/.." }, f.config), { ...f.config, provider: "q", thinking: "off" });
-  assert.throws(() => resolveCreateConfig({ ...input(), model: "" }, f.config));
-  assert.throws(() => resolveCreateConfig({ ...input(), prompt: " " }, f.config));
-  await assert.rejects(f.manager.create(input(""), f.config));
+  assert.deepEqual(resolveSpawnConfig(input(), f.config), f.config);
+  assert.deepEqual(resolveSpawnConfig({ ...input(), provider: "q", thinking: "off", cwd: "./dir/.." }, f.config), { ...f.config, provider: "q", thinking: "off" });
+  assert.throws(() => resolveSpawnConfig({ ...input(), model: "" }, f.config));
+  assert.throws(() => resolveSpawnConfig({ ...input(), prompt: " " }, f.config));
+  await assert.rejects(f.manager.spawn(input(""), f.config));
 });
 
-test("create reserves unique name, no prebuilt JSONL, sends prompt once and waits for valid record, not assistant", async t => {
+test("spawn reserves unique name, no prebuilt JSONL, sends prompt once and waits for valid record, not assistant", async t => {
   const f = await fixture(t);
-  const result = await f.manager.create(input(), f.config);
+  const result = await f.manager.spawn(input(), f.config);
   assert.deepEqual(result, { name: "worker", config: f.config, invoked: true });
   assert.deepEqual(await readSessionRecord(f.paths("worker").sessionFile), f.config);
   const before = await readFile(f.paths("worker").sessionFile, "utf8");
-  await assert.rejects(f.manager.create(input(), f.config), { code: "EEXIST" });
+  await assert.rejects(f.manager.spawn(input(), f.config), { code: "EEXIST" });
   assert.equal(await readFile(f.paths("worker").sessionFile, "utf8"), before);
   assert.deepEqual(f.prompts, ["original"]);
-  const simultaneous = await Promise.allSettled([f.manager.create(input("same"), f.config), f.manager.create(input("same"), f.config)]);
+  const simultaneous = await Promise.allSettled([f.manager.spawn(input("same"), f.config), f.manager.spawn(input("same"), f.config)]);
   assert.equal(simultaneous.filter(item => item.status === "fulfilled").length, 1);
   assert.equal(f.calls.filter(item => item.op === "start").length, 2);
 });
@@ -98,20 +98,20 @@ test("start failure, ready timeout and ready+invoked without valid persistence c
     await createSubagentDirectory(f.root, "parent", "existing");
     await writeFile(f.paths("existing").sessionFile, "do not touch");
     f.flags[flag] = true;
-    await assert.rejects(f.manager.create(input(), f.config), flag === "failStart" ? /start failed/ : { code: flag === "noReady" ? "READY_TIMEOUT" : "PERSISTENCE_TIMEOUT" });
+    await assert.rejects(f.manager.spawn(input(), f.config), flag === "failStart" ? /start failed/ : { code: flag === "noReady" ? "READY_TIMEOUT" : "PERSISTENCE_TIMEOUT" });
     assert.equal(await readdir(f.paths("worker").parentDir).then(names => names.includes("n-776f726b6572")), false);
     assert.equal(await readFile(f.paths("existing").sessionFile, "utf8"), "do not touch");
     assert.equal(f.servers.size, 0);
   }
 });
 
-test("message/instant inspect/wait inspect propagate cancellation and timeout without stopping child", async t => {
-  const f = await fixture(t); await f.manager.create(input(), f.config);
-  assert.deepEqual(await f.manager.inspect("worker"), { state: "working" });
-  assert.deepEqual(await f.manager.message("worker", "steer", true), { invoked: true });
-  await assert.rejects(f.manager.inspect("worker", true, { timeoutMs: 10 }), { code: "TIMEOUT" });
+test("send/status/wait propagate cancellation and timeout without stopping child", async t => {
+  const f = await fixture(t); await f.manager.spawn(input(), f.config);
+  assert.deepEqual(await f.manager.status("worker"), { state: "working" });
+  assert.deepEqual(await f.manager.send("worker", "steer", true), { invoked: true });
+  await assert.rejects(f.manager.wait("worker", { timeoutMs: 10 }), { code: "TIMEOUT" });
   const abort = new AbortController();
-  const waiting = f.manager.inspect("worker", true, { timeoutMs: 500, signal: abort.signal });
+  const waiting = f.manager.wait("worker", { timeoutMs: 500, signal: abort.signal });
   await delay(5); abort.abort();
   await assert.rejects(waiting, { code: "ABORTED" });
   await delay(5);
@@ -120,21 +120,62 @@ test("message/instant inspect/wait inspect propagate cancellation and timeout wi
   assert.deepEqual((await f.manager.list())[0]?.status, { available: true, workState: "working" });
 });
 
-test("create cancellation and stop failure retain records rather than deleting a live process", async t => {
+test("status/wait defaults and overrides preserve legacy inspect/message wire methods", async t => {
+  const f = await fixture(t);
+  await createSubagentDirectory(f.root, "parent", "worker");
+  const calls: Array<{ method: string; params: JsonValue; timeoutMs?: number }> = [];
+  const manager = new ParentManager({ ...f.options, connect: async () => ({
+    async request(method, params, options): Promise<JsonValue> {
+      if (method === "identity") return { ...f.config, runDir: f.paths("worker").runDir, sessionFile: f.paths("worker").sessionFile, pid: 42 };
+      calls.push({ method, params, timeoutMs: options?.timeoutMs });
+      if (method === "message") return { invoked: true };
+      assert.equal(method, "inspect", "old bridges only support identity/message/inspect");
+      return (params as { wait: boolean }).wait ? { state: "idle", reply: null } : { state: "idle" };
+    },
+    async close() {},
+  }) });
+  t.after(() => manager.shutdown("reload"));
+  assert.deepEqual(await manager.recover(), [{ name: "worker", connected: true }]);
+  assert.deepEqual(await manager.status("worker"), { state: "idle" });
+  assert.deepEqual(await manager.wait("worker"), { state: "idle", reply: null });
+  await manager.status("worker", { timeoutMs: 123 });
+  await manager.wait("worker", { timeoutMs: 456 });
+  assert.deepEqual(await manager.send("worker", "steer"), { invoked: true });
+  await manager.send("worker", "follow-up", true, { timeoutMs: 789 });
+  assert.deepEqual(await manager.list(), [{ name: "worker", status: { available: true, workState: "idle" } }]);
+  await manager.list({ timeoutMs: 321 });
+  assert.deepEqual(calls, [
+    { method: "inspect", params: { wait: false }, timeoutMs: 1000 },
+    { method: "inspect", params: { wait: true }, timeoutMs: 1_800_000 },
+    { method: "inspect", params: { wait: false }, timeoutMs: 123 },
+    { method: "inspect", params: { wait: true }, timeoutMs: 456 },
+    { method: "message", params: { prompt: "steer", followUp: false }, timeoutMs: 30_000 },
+    { method: "message", params: { prompt: "follow-up", followUp: true }, timeoutMs: 789 },
+    { method: "inspect", params: { wait: false }, timeoutMs: 1000 },
+    { method: "inspect", params: { wait: false }, timeoutMs: 321 },
+  ]);
+  for (const timeoutMs of [0, -1, 1.5, NaN, Infinity, 2_147_483_648]) {
+    await assert.rejects(manager.status("worker", { timeoutMs }), RangeError);
+    await assert.rejects(manager.wait("worker", { timeoutMs }), RangeError);
+  }
+  assert.equal(calls.length, 8, "invalid timeouts never reach the old bridge");
+});
+
+test("spawn cancellation and stop failure retain records rather than deleting a live process", async t => {
   const f = await fixture(t); f.flags.noPersist = true; f.flags.failStop = true;
   const abort = new AbortController();
-  const creating = f.manager.create(input(), f.config, { signal: abort.signal });
+  const creating = f.manager.spawn(input(), f.config, { signal: abort.signal });
   await delay(15); abort.abort();
   await assert.rejects(creating, AggregateError);
   assert.equal(f.servers.size, 1);
   assert.ok((await readdir(f.paths("worker").parentDir)).length);
   f.flags.failStop = false;
-  await f.manager.destroy("worker");
+  await f.manager.stop("worker");
 });
 
 test("reload closes waits/connections but leaves child; new manager reconnects without restarting or replay", async t => {
-  const f = await fixture(t); await f.manager.create(input(), f.config);
-  const waiting = f.manager.inspect("worker", true);
+  const f = await fixture(t); await f.manager.spawn(input(), f.config);
+  const waiting = f.manager.wait("worker");
   const rejected = assert.rejects(waiting);
   await f.manager.shutdown("reload"); await rejected;
   assert.equal(f.servers.size, 1);
@@ -175,24 +216,26 @@ test("unreachable old live child is not duplicated; fallback configuration is re
   assert.ok(await readFile(f.paths("fallback").sessionFile));
 });
 
-test("destroy live/stopped records and repeated cleanup; symlink replacement and other parent preserved", async t => {
-  const f = await fixture(t); await f.manager.create(input(), f.config);
-  await f.manager.destroy("worker"); await f.manager.destroy("worker");
+test("stop live/stopped records and repeated cleanup; symlink replacement and other parent preserved", async t => {
+  const f = await fixture(t); await f.manager.spawn(input(), f.config);
+  await writeFile(join(f.paths("worker").runDir, "extra-history"), "owned");
+  await f.manager.stop("worker"); await f.manager.stop("worker");
+  await assert.rejects(readdir(f.paths("worker").runDir), { code: "ENOENT" });
   await createSubagentDirectory(f.root, "parent", "stopped");
   await writeFile(f.paths("stopped").sessionFile, record(f.config));
-  await f.manager.destroy("stopped");
+  await f.manager.stop("stopped");
   const other = await createSubagentDirectory(f.root, "other-parent", "worker");
   await writeFile(other.sessionFile, "other");
   await symlink(other.runDir, f.paths("worker").runDir);
-  await assert.rejects(f.manager.destroy("worker"), /Unsafe managed/);
+  await assert.rejects(f.manager.stop("worker"), /Unsafe managed/);
   assert.equal(await readFile(other.sessionFile, "utf8"), "other");
 });
 
-test("destroy cancellation is checked before stop; an initiated graceful stop finishes, then retains session on cancellation", async t => {
+test("stop cancellation is checked before stop; an initiated graceful stop finishes, then retains session on cancellation", async t => {
   const f = await fixture(t);
-  await f.manager.create(input(), f.config);
+  await f.manager.spawn(input(), f.config);
   const c = new AbortController(); c.abort();
-  await assert.rejects(f.manager.destroy("worker", { signal: c.signal }), { code: "ABORTED" });
+  await assert.rejects(f.manager.stop("worker", { signal: c.signal }), { code: "ABORTED" });
   assert.equal(f.calls.filter(call => call.op === "stop").length, 0);
   const saved = await readFile(f.paths("worker").sessionFile, "utf8");
   const during = new AbortController();
@@ -203,17 +246,17 @@ test("destroy cancellation is checked before stop; an initiated graceful stop fi
     await originalStop(paths);
     stopped = true;
   };
-  await assert.rejects(f.manager.destroy("worker", { signal: during.signal }), { code: "ABORTED" });
+  await assert.rejects(f.manager.stop("worker", { signal: during.signal }), { code: "ABORTED" });
   assert.equal(stopped, true);
   assert.equal(await readFile(f.paths("worker").sessionFile, "utf8"), saved);
   f.options.driver.stop = originalStop;
-  await f.manager.destroy("worker");
+  await f.manager.stop("worker");
   assert.deepEqual(await readdir(f.paths("worker").parentDir), []);
 });
 
 test("quit/new/resume/fork stop and preserve history; lifecycle factory only registers hooks", async t => {
   for (const reason of ["quit", "new", "resume", "fork"] as const) {
-    const f = await fixture(t); await f.manager.create(input(), f.config);
+    const f = await fixture(t); await f.manager.spawn(input(), f.config);
     await Promise.all([f.manager.shutdown(reason), f.manager.shutdown(reason)]);
     assert.equal(f.calls.filter(item => item.op === "stop").length, 1);
     assert.ok(await readFile(f.paths("worker").sessionFile));
@@ -232,11 +275,11 @@ test("quit/new/resume/fork stop and preserve history; lifecycle factory only reg
 
 test("Pi thinking clamp is returned as effective config; provider/model fallback still fails", async t => {
   const f = await fixture(t); f.flags.clamp = true;
-  const created = await f.manager.create(input(), f.config);
+  const created = await f.manager.spawn(input(), f.config);
   assert.equal(created.config.thinking, "off");
   assert.equal((await readSessionRecord(f.paths("worker").sessionFile)).thinking, "off");
   f.flags.clamp = false; f.flags.mismatch = true;
-  await assert.rejects(f.manager.create(input("fallback"), f.config), /effective configuration/);
+  await assert.rejects(f.manager.spawn(input("fallback"), f.config), /effective configuration/);
 });
 
 test("timeouts/cancellation cover connection setup and cancelled caller does not poison another caller", async t => {
@@ -248,10 +291,10 @@ test("timeouts/cancellation cover connection setup and cancelled caller does not
       ? { ...f.config, runDir: f.paths("worker").runDir, sessionFile: f.paths("worker").sessionFile, pid: 42 }
       : { state: "idle" }, close: async () => {} };
   } });
-  await assert.rejects(manager.inspect("worker", false, { timeoutMs: 5 }), { code: "TIMEOUT" });
+  await assert.rejects(manager.status("worker", { timeoutMs: 5 }), { code: "TIMEOUT" });
   const abort = new AbortController();
-  const first = manager.inspect("worker", false, { signal: abort.signal });
-  const second = manager.inspect("worker");
+  const first = manager.status("worker", { signal: abort.signal });
+  const second = manager.status("worker");
   abort.abort();
   await assert.rejects(first, { code: "ABORTED" });
   assert.deepEqual(await second, { state: "idle" });
@@ -263,7 +306,7 @@ test("readiness deadline also bounds a socket whose identity RPC never responds"
   const manager = new ParentManager({ ...f.options, connect: async (_runDir, signal) => ({
     request: async () => { await delay(500, undefined, { signal }); return null; }, close: async () => {},
   }) });
-  await assert.rejects(manager.create(input(), f.config), { code: "READY_TIMEOUT" });
+  await assert.rejects(manager.spawn(input(), f.config), { code: "READY_TIMEOUT" });
   assert.equal(f.servers.size, 0);
   await manager.shutdown("reload");
 });
