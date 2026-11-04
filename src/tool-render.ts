@@ -17,7 +17,7 @@ function lines(text: string, width: number): string[] {
 }
 function capped(rows: string[], limit: number, expanded: boolean, width: number, hint: string): string[] {
   if (expanded || rows.length <= limit) return rows;
-  return [...rows.slice(0, limit), truncateToWidth(`… (${hint})`, width)];
+  return [...rows.slice(0, limit), truncateToWidth(`... (${hint})`, width)];
 }
 function pending(p: SubagentInput): string {
   switch (p.operation) {

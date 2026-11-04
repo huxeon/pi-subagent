@@ -321,6 +321,13 @@ test("compact/expanded Chinese, emoji, long unbroken text, Markdown code/table, 
   assert.ok(Buffer.byteLength(r.content[0].text) <= 50 * 1024);
   const saved = JSON.parse(JSON.stringify(r.details)) as ToolDetails;
   assert.equal((saved.data as { reply: { text: string } }).reply.text, full);
+  for (const output of [
+    render({ operation: "wait", name: "a" }, saved, false, 80),
+    render({ operation: "spawn", name: "a", prompt: full }, done(undefined, config), false, 80),
+  ]) {
+    assert.match(output, /\.\.\. \(ctrl\+o to expand\)/);
+    assert.doesNotMatch(output, /…/);
+  }
   for (const width of [1, 2, 7, 20, 80]) {
     const args: SubagentInput = { operation: "wait", name: "a" };
     assert.ok(render(args, saved, true, width).length > render(args, saved, false, width).length);
