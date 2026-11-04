@@ -11,12 +11,16 @@ import { renderWidget, SubagentPicker } from "./ui-components.ts";
  * attached, the parent event loop cannot write UI or run shutdown concurrently. */
 export function attachTerminal(tui: Pick<TUI, "stop" | "start" | "requestRender">, target: string,
   run: (target: string) => void = target => {
-    const result = spawnSync("tmux", ["attach-session", "-t", target], { stdio: "inherit" });
+    // tmux renders through the TTY identified by stdin; stdout only carries
+    // client messages such as "[detached ...]". Keep stderr for attach errors.
+    const result = spawnSync("tmux", ["attach-session", "-t", target], { stdio: ["inherit", "ignore", "inherit"] });
     if (result.error) throw result.error;
     if (result.status !== 0) throw new Error(`tmux attach-session failed (${result.signal ?? result.status})`);
   }): void {
   try {
-    tui.stop();
+    // This is a temporary handoff, not an exit: fullscreen stop() otherwise
+    // dumps the parent UI to the main screen, leaving a copy after each attach.
+    tui.stop({ preserveScreen: true });
     run(target);
   } finally {
     tui.start();

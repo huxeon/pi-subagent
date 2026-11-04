@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { KeybindingsManager, TUI_KEYBINDINGS, visibleWidth } from "@earendil-works/pi-tui";
+import { KeybindingsManager, TUI_KEYBINDINGS, TuiAltScreen, TuiMainScreen, visibleWidth, type Terminal } from "@earendil-works/pi-tui";
 import { UiRefresh, type UiClock, type UiEntry } from "../src/ui-refresh.ts";
 import { renderWidget, SubagentPicker } from "../src/ui-components.ts";
 import { attachTerminal, registerParentUi } from "../src/parent-ui.ts";
@@ -104,14 +104,51 @@ test("picker has theme-colored top/bottom borders across refresh, resize and emp
   assert.ok(colors.every(color => color === "accent"));
 });
 
-test("terminal detach/exception/spawn failure always restores TUI", () => {
+test("terminal detach/exception/spawn failure preserves screen and always restores TUI", () => {
   for (const fails of [false, true]) {
     const calls: string[] = [];
-    const tui = { stop() { calls.push("stop"); }, start() { calls.push("start"); }, requestRender(full?: boolean) { assert.equal(full, true); calls.push("render"); } };
+    const tui = { stop(options?: { preserveScreen?: boolean }) { assert.deepEqual(options, { preserveScreen: true }); calls.push("stop"); }, start() { calls.push("start"); }, requestRender(full?: boolean) { assert.equal(full, true); calls.push("render"); } };
     const run = (target: string) => { assert.equal(target, "=safe"); calls.push("attach"); if (fails) throw new Error("spawn/attach failed"); };
     if (fails) assert.throws(() => attachTerminal(tui, "=safe", run), /failed/);
     else attachTerminal(tui, "=safe", run);
     assert.deepEqual(calls, ["stop", "attach", "start", "render"]);
+  }
+});
+
+test("real regular/fullscreen renderers do not dump parent UI during repeated terminal handoffs", () => {
+  for (const Renderer of [TuiMainScreen, TuiAltScreen]) {
+    const writes: string[] = [];
+    const noop = () => {};
+    const terminal: Terminal = {
+      columns: 80, rows: 24, kittyProtocolActive: false,
+      start: noop, stop: noop, drainInput: async () => {},
+      write: data => { writes.push(data); }, moveBy: noop,
+      hideCursor: noop, showCursor: noop, clearLine: noop,
+      clearFromCursor: noop, clearScreen: noop, setTitle: noop,
+      setProgress: noop, setProgramStatus: noop,
+    };
+    const tui = new Renderer(terminal);
+    const marker = "parent-editor-and-footer";
+    tui.addChild({ render: () => [marker], invalidate() {} });
+    try {
+      tui.start();
+      tui.renderNow(true);
+      for (const fails of [false, true, false]) {
+        writes.length = 0;
+        const run = () => {
+          // Temporary suspension must not print a fullscreen exit snapshot to the main screen.
+          assert.ok(!writes.join("").includes(marker), `${tui.mode}: parent UI leaked before attach`);
+          if (fails) throw new Error("attach failed");
+        };
+        if (fails) assert.throws(() => attachTerminal(tui, "=safe", run), /attach failed/);
+        else attachTerminal(tui, "=safe", run);
+        writes.length = 0;
+        tui.renderNow(); // Flush the forced redraw requested by attachTerminal.
+        assert.ok(writes.join("").includes(marker), `${tui.mode}: parent UI was not restored`);
+      }
+    } finally {
+      tui.stop({ preserveScreen: true });
+    }
   }
 });
 
