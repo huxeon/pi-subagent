@@ -4,7 +4,7 @@
 
 基于 Pi RPC 模式实现异步、常驻、可多次交互的子代理。
 
-- 提供 `spawn` 和 `send` 两个模型工具。
+- 提供一个名为 `subagent` 的模型工具，以 `action: "spawn" | "send"` 区分两个子命令。
 - 每个子代理以名字作为唯一标识，名称在同一父会话内唯一。
 - 工具只等待 RPC 接收确认，不等待任务完成。
 - 子代理在 `agent_settled` 时回报，回报后保持运行，继续接受消息。
@@ -13,12 +13,22 @@
 
 ## 2. 工具接口
 
+`subagent` 工具提供 `spawn`、`send` 两个子命令，通过 `action` 参数选择。模型使用结构化参数调用：
+
+```ts
+subagent({ action: "spawn", name: "reviewer", message: "检查代码" });
+subagent({ action: "send", name: "reviewer", message: "重点检查并发", mode: "steer" });
+```
+
+以下分别描述两个子命令的参数及行为。名字和消息必须是非空、非纯空白字符串；校验不改变原始文本，不编码名字、不归一化大小写。
+
 ### 2.1 spawn
 
 启动子代理并发送初始消息。
 
 | 参数 | 必需 | 说明 |
 | --- | --- | --- |
+| `action` | 是 | 固定为 `"spawn"` |
 | `name` | 是 | 子代理名字，同一父会话内唯一 |
 | `message` | 是 | 初始任务消息文本 |
 | `provider` | 成组可选 | 子代理的 provider |
@@ -50,6 +60,7 @@
 
 | 参数 | 必需 | 说明 |
 | --- | --- | --- |
+| `action` | 是 | 固定为 `"send"` |
 | `name` | 是 | 目标子代理名字 |
 | `message` | 是 | 消息文本 |
 | `mode` | 否 | `"steer"` 或 `"followUp"`，默认 `"steer"` |
@@ -72,7 +83,7 @@
 - `provider`、`model`：解析后的模型配置。
 - `args`：包含 `--no-session`、`--thinking <level>` 和 `--exclude-tools subagent`。
 
-RPC 模式由 `RpcClient` 设置。启动子代理时通过 `--exclude-tools subagent` 排除子代理工具，避免嵌套调用；其他扩展和资源仍按 Pi 默认规则加载。
+RPC 模式由 `RpcClient` 设置。启动子代理时通过 `--exclude-tools subagent` 按注册名排除整个 `subagent` 工具（包括 spawn/send 两个 action），避免嵌套调用；其他扩展和资源仍按 Pi 默认规则加载。
 
 `start()` 后可通过 `getState()` 确认 RPC 可用及实际模型配置。
 
