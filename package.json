@@ -2,23 +2,17 @@
   "name": "pi-subagent",
   "version": "0.1.0",
   "private": true,
-  "description": "A tmux-based subagent extension for Pi.",
+  "description": "A minimal Pi extension scaffold.",
   "type": "module",
   "engines": {
     "node": ">=22.18.0"
   },
   "keywords": [
     "pi-package",
-    "pi-extension",
-    "tmux",
-    "subagent"
+    "pi-extension"
   ],
   "scripts": {
-    "typecheck": "tsc --noEmit",
-    "test": "node --test tests/*.test.ts",
-    "test:integration": "node --test tests/integration.test.ts",
-    "test:pi-api": "node tests/verify-pi.mjs",
-    "test:pi-production": "node tests/verify-production-pi.mjs"
+    "typecheck": "tsc --noEmit"
   },
   "pi": {
     "extensions": ["./index.ts"]
