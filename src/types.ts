@@ -47,7 +47,7 @@ export interface SubmissionResult {
   disposition: PromptDisposition;
 }
 
-/** Task 02 implements this boundary with the official RpcClient, not a JSONL client. */
+/** Official RpcClient boundary. The adapter is single-use; start includes a getState readiness check. */
 export type RpcAdapter = Pick<
   RpcClient,
   "start" | "getState" | "prompt" | "onEvent" | "getLastAssistantText" | "stop"
