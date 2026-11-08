@@ -30,8 +30,8 @@ export function renderStatusLines(
     const nameWidth = available - visibleWidth(suffix);
     // Preserve the state label when possible, including on very narrow terminals.
     const entry = nameWidth > 0
-      ? truncateToWidth(displayName, nameWidth, "…") + suffix
-      : truncateToWidth(label, available, "…");
+      ? truncateToWidth(displayName, nameWidth, "...") + suffix
+      : truncateToWidth(label, available, "...");
     line += separator + entry;
     hasEntry = true;
   }

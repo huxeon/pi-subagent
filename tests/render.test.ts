@@ -57,6 +57,7 @@ test("task previews limit visual rather than logical lines and expand using the 
   const collapsed = renderCall(args, theme, context(args));
   const expanded = renderCall(args, theme, context(args, { expanded: true }));
   assert.equal(collapsed.render(50).length, 5, "one title + three task lines + hint");
+  assert.match(plain(collapsed, 50).at(-1)!, /^\.\.\. \(/);
   assert.match(plain(collapsed, 50).at(-1)!, /custom-key to expand/);
   assert.ok(!plain(collapsed, 50).join("\n").includes("THE-END"));
   assert.ok(plain(expanded, 50).join("\n").includes("THE-END"));

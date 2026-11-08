@@ -22,7 +22,7 @@ function string(value: unknown): string { return typeof value === "string" ? val
 /** Keep all output within the terminal's cell width, even for tiny widths/code blocks. */
 function bounded(component: Component): Component {
   return {
-    render(width) { return width < 1 ? [] : component.render(width).map((line) => truncateToWidth(line, width, "…")); },
+    render(width) { return width < 1 ? [] : component.render(width).map((line) => truncateToWidth(line, width, "...")); },
     invalidate() { component.invalidate(); },
   };
 }
@@ -35,8 +35,8 @@ function preview(
       if (width < 1) return [];
       const lines = component.render(width);
       if (expanded || lines.length <= maxLines) return lines;
-      const hint = theme.fg("muted", `… (${lines.length - maxLines} more lines, ${keyHint("app.tools.expand", "to expand")})`);
-      return [...lines.slice(0, maxLines), truncateToWidth(hint, width, "…")];
+      const hint = theme.fg("muted", `... (${lines.length - maxLines} more lines, ${keyHint("app.tools.expand", "to expand")})`);
+      return [...lines.slice(0, maxLines), truncateToWidth(hint, width, "...")];
     },
     invalidate() { component.invalidate(); },
   };

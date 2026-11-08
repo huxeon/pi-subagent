@@ -45,7 +45,7 @@ test("layout wraps whole entries, truncates long names, and fits narrow, CJK, em
     }
   }
   const lines = renderStatusLines(names, 40, plainTheme);
-  assert.ok(lines[0].includes("…"));
+  assert.ok(lines[0].includes("..."));
   assert.ok(lines[0].endsWith("working"));
   assert.ok(lines[1].endsWith("idle"));
 });
