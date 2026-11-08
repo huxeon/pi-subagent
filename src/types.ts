@@ -47,14 +47,17 @@ export interface SubmissionResult {
   disposition: PromptDisposition;
 }
 
-/** Official RpcClient boundary. The adapter is single-use; start includes a getState readiness check. */
+/**
+ * Official RpcClient boundary. Single-use; start includes a getState readiness check.
+ * stop must be idempotent and bounded even during readiness/requests (as in rpc-client.ts).
+ */
 export type RpcAdapter = Pick<
   RpcClient,
   "start" | "getState" | "prompt" | "onEvent" | "getLastAssistantText" | "stop"
 >;
 export type RpcAdapterFactory = (config: ResolvedChildConfig) => RpcAdapter;
 
-/** Task 04/05 supplies delivery to the parent via pi.sendMessage(). */
+/** Settled-only result; report.ts formats delivery to the parent via pi.sendMessage(). */
 export interface SubagentReport {
   name: SubagentName;
   text: string | null;

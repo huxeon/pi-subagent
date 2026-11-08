@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { JsonAgentSessionEvent, RpcEventListener } from "@earendil-works/pi-coding-agent";
 import { SubagentManager } from "../src/manager.ts";
-import type { SubagentHandle } from "../src/manager.ts";
+import type { ParentMessageSender } from "../src/report.ts";
 import type {
   ParentConfigSnapshot, PromptDisposition, ResolvedChildConfig, SendInput, SpawnInput,
 } from "../src/types.ts";
@@ -25,7 +25,7 @@ function deferred<T>() {
 function fixture(factory: (config: ResolvedChildConfig) => FakeRpcClient = () => new FakeRpcClient()) {
   const configs: ResolvedChildConfig[] = [];
   const clients: FakeRpcClient[] = [];
-  const events: { child: SubagentHandle; event: JsonAgentSessionEvent }[] = [];
+  const events: Parameters<ParentMessageSender>[] = [];
   const manager = new SubagentManager({
     createClient(config) {
       configs.push(config);
@@ -33,7 +33,7 @@ function fixture(factory: (config: ResolvedChildConfig) => FakeRpcClient = () =>
       clients.push(client);
       return client;
     },
-    onEvent(child, event) { events.push({ child, event }); },
+    sendMessage(...args) { events.push(args); },
   });
   return { manager, configs, clients, events };
 }
@@ -96,7 +96,7 @@ test("the name is reserved even before a reentrant synchronous factory", async (
       if (creations === 1) duplicate = assert.rejects(manager.spawn(spawn, parent), /already exists/);
       return client;
     },
-    onEvent() { assert.fail("No event was emitted"); },
+    sendMessage() { assert.fail("No settled event was emitted"); },
   });
   await manager.spawn(spawn, parent);
   await duplicate;
@@ -181,30 +181,31 @@ test("spawn snapshots config and message before async startup, later spawns take
   assert.equal(configs.length, 2);
 });
 
-test("all events, including fast settled before prompt acknowledgement, reach the resource boundary", { timeout: 2000 }, async (t) => {
+test("fast settled before prompt acknowledgement reports without waiting for spawn", { timeout: 2000 }, async (t) => {
   const client = new FakeRpcClient();
   const acceptance = deferred<PromptDisposition>();
-  const entered = deferred<void>();
+  const delivered = deferred<void>();
+  client.text = "fast result";
   t.mock.method(client, "prompt", () => {
+    assert.equal(client.listeners.size, 1);
     client.emit({ type: "agent_start" });
     client.emit(settled);
-    entered.resolve();
     return acceptance.promise;
   });
-  const { manager, events, configs } = fixture(() => client);
+  const manager = new SubagentManager({
+    createClient: () => client,
+    sendMessage(message) {
+      assert.equal(message.content, "Subagent: Reviewer\n\nfast result");
+      delivered.resolve();
+    },
+  });
   const spawning = manager.spawn(spawn, parent);
-  await entered.promise;
-  assert.deepEqual(events.map(({ event }) => event.type), ["agent_start", "agent_settled"]);
-  assert.equal(events[1].event, settled);
-  assert.equal(events[1].child.client, client);
-  assert.equal(events[1].child.name, spawn.name);
-  assert.equal(events[1].child.config, configs[0]);
-  assert.equal(events[0].child, events[1].child);
+  await delivered.promise;
+  await assert.rejects(manager.send(send), /not ready/);
+  assert.deepEqual(methods(client), ["start", "onEvent", "getLastAssistantText"]);
   acceptance.resolve("started");
   await spawning;
-  client.emit(settled);
-  assert.equal(events.length, 3);
-  assert.deepEqual(methods(client), ["start", "onEvent"]); // Manager never fetches/report texts here.
+  await manager.shutdown();
 });
 
 test("send while initial acceptance is pending fails explicitly rather than queueing", { timeout: 2000 }, async (t) => {
