@@ -28,7 +28,7 @@ interface Reservation {
 }
 
 export interface SubagentManagerOptions {
-  // Required; task 05 binds this to the current extension instance's pi.sendMessage.
+  // Required; bound to the current extension instance's pi.sendMessage by src/index.ts.
   sendMessage: ParentMessageSender;
   createClient?: RpcAdapterFactory;
 }

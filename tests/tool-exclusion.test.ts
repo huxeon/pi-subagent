@@ -11,7 +11,9 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext, ToolExposure } from "@earendil-works/pi-coding-agent";
+import extension from "../index.ts";
 import { SUBAGENT_TOOL_NAME } from "../src/config.ts";
+import { FakeRpcClient } from "./helpers/fake-rpc-client.ts";
 
 // This is an isolated SDK fixture, not the production extension or a model response.
 const offlineModel: NonNullable<ExtensionContext["model"]> = {
@@ -21,9 +23,13 @@ const offlineModel: NonNullable<ExtensionContext["model"]> = {
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 };
 
-for (const exposure of ["direct", "codemode", "deferred"] satisfies ToolExposure[]) {
+const scenarios = [
+  ...(["direct", "codemode", "deferred"] satisfies ToolExposure[]).map((exposure) => ({ exposure, production: false })),
+  { exposure: "direct" as const, production: true },
+];
+for (const { exposure, production } of scenarios) {
   for (const excluded of [false, true]) {
-    test(`subagent excluded=${excluded}, exposure=${exposure}: registry and nested execution`, async (t) => {
+    test(`subagent excluded=${excluded}, exposure=${exposure}, production=${production}: registry and nested execution`, async (t) => {
       const root = await mkdtemp(join(tmpdir(), "pi-subagent-exclusion-"));
       t.after(() => rm(root, { recursive: true, force: true }));
       t.mock.method(globalThis, "fetch", () => { throw new Error("Network forbidden in offline test"); });
@@ -31,13 +37,16 @@ for (const exposure of ["direct", "codemode", "deferred"] satisfies ToolExposure
         compaction: { enabled: false }, retry: { enabled: false },
       });
       const calls: string[] = [];
+      const client = new FakeRpcClient();
       const loader = new DefaultResourceLoader({
         cwd: root, agentDir: root, settingsManager,
         noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true,
         noContextFiles: true,
         // Even excluded tools are really registered by an extension factory.
         extensionFactories: [(pi) => {
-          pi.registerTool({
+          if (production) {
+            extension(pi, { createClient() { calls.push("spawn"); return client; } });
+          } else pi.registerTool({
             name: SUBAGENT_TOOL_NAME, label: "Subagent", description: "Offline stub only", exposure,
             parameters: {
               type: "object", required: ["action"],
@@ -53,11 +62,22 @@ for (const exposure of ["direct", "codemode", "deferred"] satisfies ToolExposure
             parameters: { type: "object", properties: {} },
             async execute(_id, _args, _signal, _onUpdate, ctx) {
               const outcomes = [];
+              const invalid = [];
+              if (production && !excluded) {
+                for (const partial of [{ provider: "p" }, { model: "m" }]) {
+                  invalid.push(await ctx.executeTool(SUBAGENT_TOOL_NAME, {
+                    action: "spawn", name: "reviewer", message: "offline task", ...partial,
+                  }));
+                }
+              }
               for (const action of ["spawn", "send"]) {
-                const outcome = await ctx.executeTool(SUBAGENT_TOOL_NAME, { action });
+                const outcome = await ctx.executeTool(SUBAGENT_TOOL_NAME, {
+                  action, name: "reviewer", message: "offline task",
+                  ...(production && action === "spawn" ? { thinking: "off" } : {}),
+                });
                 outcomes.push({ action, isError: outcome.isError, content: outcome.result.content });
               }
-              return { content: [{ type: "text", text: "probe complete" }], details: { outcomes } };
+              return { content: [{ type: "text", text: "probe complete" }], details: { outcomes, invalid } };
             },
           });
         }],
@@ -94,15 +114,26 @@ for (const exposure of ["direct", "codemode", "deferred"] satisfies ToolExposure
       const result = await caller.execute("offline-probe", {}, undefined);
       const details = result.details as {
         outcomes: { action: string; isError: boolean; content: { type: string; text?: string }[] }[];
+        invalid: { isError: boolean; result: { content: { type: string; text?: string }[] } }[];
       };
       assert.deepEqual(details.outcomes.map((outcome) => outcome.action), ["spawn", "send"]);
       for (const outcome of details.outcomes) {
         assert.equal(outcome.isError, excluded);
         assert.deepEqual(outcome.content, [{
-          type: "text", text: excluded ? `Tool ${SUBAGENT_TOOL_NAME} not found` : "stub executed",
+          type: "text", text: excluded ? `Tool ${SUBAGENT_TOOL_NAME} not found`
+            : production ? JSON.stringify({ name: "reviewer", disposition: "started" }) : "stub executed",
         }]);
       }
-      assert.deepEqual(calls, excluded ? [] : ["spawn", "send"]);
+      assert.deepEqual(calls, excluded ? [] : production ? ["spawn"] : ["spawn", "send"]);
+      if (production) {
+        assert.equal(details.invalid.length, excluded ? 0 : 2);
+        for (const outcome of details.invalid) {
+          assert.equal(outcome.isError, true);
+          assert.match(outcome.result.content[0].text!, /provider and model must be provided together/);
+        }
+        assert.deepEqual(client.calls.filter(({ method }) => method === "prompt").map(({ args }) => args),
+          excluded ? [] : [["offline task"], ["offline task", undefined, "steer"]]);
+      }
     });
   }
 }
