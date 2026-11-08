@@ -25,7 +25,7 @@ function thinkingLevel(value: unknown, field: string): ThinkingLevel {
   return value as ThinkingLevel;
 }
 
-/** Validate raw arguments; preserve names/messages and default only send.mode. */
+/** Validate raw arguments; preserve names/messages and default only send.followUp. */
 export function parseSubagentInput(value: unknown): ParsedSubagentInput {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Error("subagent arguments must be an object");
@@ -37,11 +37,10 @@ export function parseSubagentInput(value: unknown): ParsedSubagentInput {
   const name = nonEmptyString(input.name, "name");
   const message = nonEmptyString(input.message, "message");
   if (input.action === "send") {
-    const mode = input.mode === undefined ? "steer" : input.mode;
-    if (mode !== "steer" && mode !== "followUp") {
-      throw new Error('mode must be "steer" or "followUp"');
-    }
-    return { action: "send", name, message, mode };
+    if (input.mode !== undefined) throw new Error("mode is no longer supported; use followUp instead");
+    const followUp = input.followUp === undefined ? false : input.followUp;
+    if (typeof followUp !== "boolean") throw new Error("followUp must be a boolean");
+    return { action: "send", name, message, followUp };
   }
 
   if ((input.provider === undefined) !== (input.model === undefined)) {

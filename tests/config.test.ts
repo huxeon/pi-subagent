@@ -113,14 +113,17 @@ test("arguments require a supported action", () => {
   }
 });
 
-test("send defaults mode to steer and accepts both queue modes", () => {
+test("send defaults followUp to false, accepts booleans, and rejects the former mode parameter", () => {
   const send = { action: "send", name: "Reviewer", message: "More work" };
-  assert.deepEqual(parseSubagentInput(send), { ...send, mode: "steer" });
-  for (const mode of ["steer", "followUp"]) {
-    assert.deepEqual(parseSubagentInput({ ...send, mode }), { ...send, mode });
+  assert.deepEqual(parseSubagentInput(send), { ...send, followUp: false });
+  for (const followUp of [false, true]) {
+    assert.deepEqual(parseSubagentInput({ ...send, followUp }), { ...send, followUp });
   }
-  for (const mode of [null, "followup", "", "queue", 1]) {
-    assert.throws(() => parseSubagentInput({ ...send, mode }), /mode must be/);
+  for (const followUp of [null, "true", "false", "followUp", "", 0, 1, {}, []]) {
+    assert.throws(() => parseSubagentInput({ ...send, followUp }), /followUp must be a boolean/);
+  }
+  for (const mode of [null, "steer", "followUp", "", 1]) {
+    assert.throws(() => parseSubagentInput({ ...send, mode }), /mode is no longer supported/);
   }
 });
 

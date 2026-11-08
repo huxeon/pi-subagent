@@ -3,7 +3,6 @@ import type { ExtensionContext, RpcClient } from "@earendil-works/pi-coding-agen
 /** Exact, session-local key. No case folding or path encoding. */
 export type SubagentName = string;
 export type ThinkingLevel = NonNullable<ExtensionContext["thinkingLevel"]>;
-export type SendMode = "steer" | "followUp";
 
 export interface SpawnInput {
   action: "spawn";
@@ -18,11 +17,11 @@ export interface SendInput {
   action: "send";
   name: SubagentName;
   message: string;
-  mode?: SendMode;
+  followUp?: boolean;
 }
 
 export type SubagentInput = SpawnInput | SendInput;
-export type ParsedSubagentInput = SpawnInput | (SendInput & { mode: SendMode });
+export type ParsedSubagentInput = SpawnInput | (SendInput & { followUp: boolean });
 
 /** Plain values captured at tool invocation, not a retained extension context. */
 export interface ParentConfigSnapshot {
@@ -46,6 +45,18 @@ export interface SubmissionResult {
   name: SubagentName;
   disposition: PromptDisposition;
 }
+
+/** Presentation metadata; the model-facing JSON remains SubmissionResult. */
+export interface SubmissionDetails extends SubmissionResult {
+  config?: Pick<ResolvedChildConfig, "provider" | "model" | "thinking">;
+}
+
+/** Live activity, not submission acceptance or task success. */
+export interface SubagentStatus {
+  readonly name: SubagentName;
+  readonly state: "running" | "idle";
+}
+export type StatusReceiver = (statuses: readonly SubagentStatus[]) => void;
 
 /**
  * Official RpcClient boundary. Single-use; start includes a getState readiness check.

@@ -10,6 +10,8 @@ import type {
   RpcAdapterFactory,
   SendInput,
   SpawnInput,
+  StatusReceiver,
+  SubagentStatus,
   SubmissionResult,
 } from "./types.ts";
 
@@ -22,6 +24,7 @@ interface SubagentHandle {
 
 interface Reservation {
   phase: "starting" | "ready" | "failed";
+  state: SubagentStatus["state"];
   child?: SubagentHandle;
   unsubscribe?: () => void;
   cleanup?: Promise<void>;
@@ -31,6 +34,7 @@ export interface SubagentManagerOptions {
   // Required; bound to the current extension instance's pi.sendMessage by src/index.ts.
   sendMessage: ParentMessageSender;
   createClient?: RpcAdapterFactory;
+  onStatusChange?: StatusReceiver;
 }
 
 /** One instance per parent runtime; no shared names, processes, or submission queues. */
@@ -40,10 +44,12 @@ export class SubagentManager {
   private closed = false;
   private stopping?: Promise<void>;
   private readonly createClient: RpcAdapterFactory;
+  private readonly onStatusChange?: StatusReceiver;
 
   constructor(options: SubagentManagerOptions) {
     this.receiveReport = createReportReceiver(options.sendMessage);
     this.createClient = options.createClient ?? createRpcAdapter;
+    this.onStatusChange = options.onStatusChange;
   }
 
   async spawn(input: SpawnInput, parent: ParentConfigSnapshot): Promise<SubmissionResult> {
@@ -55,7 +61,7 @@ export class SubagentManager {
     // Resolve plain values synchronously: neither parent nor input is read after startup begins.
     const config = resolveChildConfig(parsed, parent);
     this.assertOpen(); // Also guard reentrant configuration getters.
-    const record: Reservation = { phase: "starting" };
+    const record: Reservation = { phase: "starting", state: "idle" };
     // Reserve before even calling the factory (which may itself re-enter the manager).
     this.records.set(name, record);
     try {
@@ -65,7 +71,13 @@ export class SubagentManager {
       await child.client.start(); // Adapter includes RPC readiness confirmation.
       this.assertCurrent(name, record);
       record.unsubscribe = child.client.onEvent((event) => {
-        if (event.type === "agent_settled" && this.isCurrent(name, record)) {
+        if (!this.isCurrent(name, record)) return;
+        if (event.type === "agent_start") this.setState(record, "running");
+        if (event.type === "agent_settled") {
+          // UI is synchronous and independent of the asynchronous result read/delivery.
+          this.setState(record, "idle");
+          // An observer may have reentrantly closed this runtime.
+          if (!this.isCurrent(name, record)) return;
           // SDK invokes listeners synchronously and never awaits their return value.
           void this.reportSettled(child, record);
         }
@@ -74,6 +86,8 @@ export class SubagentManager {
       const disposition = await child.client.prompt(message);
       this.assertCurrent(name, record);
       record.phase = "ready";
+      this.publishStatuses(); // Reveal the latest event state, never infer from disposition.
+      this.assertCurrent(name, record);
       return { name, disposition };
     } catch (error) {
       // Share cleanup with shutdown, preserving the original error and the reservation
@@ -95,14 +109,16 @@ export class SubagentManager {
     if (record.phase !== "ready" || !record.child) {
       throw new Error(`Subagent ${JSON.stringify(parsed.name)} is not ready`);
     }
-    const disposition = await record.child.client.prompt(parsed.message, undefined, parsed.mode);
+    const disposition = await record.child.client.prompt(parsed.message, undefined, parsed.followUp ? "followUp" : "steer");
     this.assertCurrent(parsed.name, record);
     return { name: parsed.name, disposition };
   }
 
   /** Terminal, idempotent runtime teardown. Never waits for outstanding RPC requests/reports. */
   shutdown(): Promise<void> {
+    const wasClosed = this.closed;
     this.closed = true; // Synchronous: block requests and delivery even before cleanup starts.
+    if (!wasClosed) this.publishStatuses(); // Hide all entries before waiting for process cleanup.
     return this.stopping ??= Promise.resolve().then(async () => {
       try {
         await Promise.all([...this.records.values()].map((record) => this.cleanup(record)));
@@ -110,6 +126,24 @@ export class SubagentManager {
         this.records.clear(); // Includes reservations whose factory/start/prompt failed or is pending.
       }
     });
+  }
+
+  private setState(record: Reservation, state: SubagentStatus["state"]): void {
+    if (record.state === state) return;
+    record.state = state;
+    // Events received before initial acceptance are retained but not yet displayed.
+    if (record.phase === "ready") this.publishStatuses();
+  }
+
+  private publishStatuses(): void {
+    if (!this.onStatusChange) return;
+    const statuses: SubagentStatus[] = [];
+    if (!this.closed) {
+      for (const [name, record] of this.records) {
+        if (record.phase === "ready") statuses.push({ name, state: record.state });
+      }
+    }
+    try { this.onStatusChange(statuses); } catch { /* Presentation must not break RPC work or cleanup. */ }
   }
 
   private assertOpen(): void {

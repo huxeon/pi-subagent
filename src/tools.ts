@@ -1,6 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { parseSubagentInput, SUBAGENT_TOOL_NAME, THINKING_LEVELS } from "./config.ts";
+import { parseSubagentInput, resolveChildConfig, SUBAGENT_TOOL_NAME, THINKING_LEVELS } from "./config.ts";
 import type { SubagentManager } from "./manager.ts";
+import { subagentToolRenderers } from "./render.ts";
+import type { ParentConfigSnapshot, SubmissionDetails, SubmissionResult } from "./types.ts";
 
 // Keep a provider-friendly object schema with plain string enums. Action-specific
 // constraints (notably the provider/model pair) are checked in execute as well.
@@ -14,7 +16,7 @@ export const subagentParameters = {
     provider: { type: "string", minLength: 1, pattern: "\\S", description: "spawn only: provider; must be supplied together with model. Omit both to inherit the parent's current model." },
     model: { type: "string", minLength: 1, pattern: "\\S", description: "spawn only: model ID; must be supplied together with provider." },
     thinking: { type: "string", enum: THINKING_LEVELS, description: "spawn only: independently optional thinking level. Omit to inherit the parent's current thinking level." },
-    mode: { type: "string", enum: ["steer", "followUp"], default: "steer", description: "send only: queue mode when the child is busy; defaults to steer. An idle child starts a new run." },
+    followUp: { type: "boolean", default: false, description: "send only: true queues a follow-up; false or omitted uses steering. An idle child starts a new run." },
   },
 } as const;
 
@@ -30,24 +32,34 @@ export function registerSubagentTool(
       "When a child settles, its last assistant text is reported asynchronously via subagent.report. " +
       "Children stay alive after reporting and can receive more messages. handled may produce no report. " +
       "For spawn, provider/model must be supplied together or both omitted; thinking is independently optional. " +
-      "Omitted configuration is inherited from the parent at call time. send.mode defaults to steer.",
+      "Omitted configuration is inherited from the parent at call time. Set send.followUp=true for follow-up; otherwise use steering.",
     promptSnippet: "Start named asynchronous subagents or send them more work",
     parameters: subagentParameters,
+    ...subagentToolRenderers,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       // Revalidate here too: tool_call hooks can mutate input after schema validation.
       // Throwing preserves parameter/RPC errors as Pi's standard failed tool results.
       const input = parseSubagentInput(params);
-      const model = input.action === "spawn" ? ctx.model : undefined;
-      const result = input.action === "spawn"
-        ? await manager.spawn(input, {
+      let config: SubmissionDetails["config"];
+      let result: SubmissionResult;
+      if (input.action === "spawn") {
+        const model = ctx.model;
+        const snapshot: ParentConfigSnapshot = {
           cwd: ctx.cwd,
           model: model ? { provider: model.provider, id: model.id } : undefined,
           thinkingLevel: ctx.thinkingLevel,
-        })
-        : await manager.send(input);
+        };
+        // Resolve from the same plain snapshot before any await; never read a later
+        // parent context while rendering a historical call. Manager validation stays independent.
+        const { provider, model: modelId, thinking } = resolveChildConfig(input, snapshot);
+        config = { provider, model: modelId, thinking };
+        result = await manager.spawn(input, snapshot);
+      } else {
+        result = await manager.send(input);
+      }
       return {
         content: [{ type: "text", text: JSON.stringify(result) }],
-        details: result,
+        details: { ...result, ...(config ? { config } : {}) },
       };
     },
   });

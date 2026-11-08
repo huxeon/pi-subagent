@@ -12,6 +12,7 @@ export function createReportReceiver(sendMessage: ParentMessageSender): ReportRe
     customType: "subagent.report",
     content: `Subagent: ${report.name}\n\n${report.text === null ? "(No assistant text available.)" : report.text}`,
     display: true,
+    details: { name: report.name, text: report.text },
   }, {
     deliverAs: "steer",
     triggerTurn: true,

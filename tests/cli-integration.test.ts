@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { RpcClient } from "@earendil-works/pi-coding-agent";
 import type { JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { resolvePiCliPath } from "../src/rpc-client.ts";
-import type { SubagentInput } from "../src/types.ts";
+import type { SubagentInput, SubagentReport } from "../src/types.ts";
 
 type Log = { type: string; pid: number; child: boolean; text?: string; mode?: string;
   users?: string[]; tools?: string[]; registered?: string[]; callable?: string[];
@@ -103,6 +103,9 @@ export default function(pi) {
     e.message.customType === "subagent.report").map((e) => {
       assert.ok(e.type === "message_end" && e.message.role === "custom");
       assert.equal(e.message.display, true);
+      const details = e.message.details as SubagentReport;
+      assert.equal(typeof details?.name, "string");
+      assert.equal(e.message.content, `Subagent: ${details.name}\n\n${details.text ?? "(No assistant text available.)"}`);
       return String(e.message.content);
     });
   const waitReport = (name: string, includes: string) => eventually(reports,
@@ -136,11 +139,13 @@ test("offline real parent/child CLI: production tools, RPC work, queues, reports
   await f.start();
   const spawn = (name: string, message: string, config: Partial<SubagentInput> = {}) =>
     f.call({ action: "spawn", name, message, ...config } as SubagentInput);
-  const send = (name: string, message: string, mode?: "steer" | "followUp") => f.call({ action: "send", name, message, mode });
+  const send = (name: string, message: string, followUp?: boolean) => f.call({ action: "send", name, message, followUp });
 
   const first = await spawn("alpha", "hold:alpha");
   assert.equal(first.isError, false);
-  assert.deepEqual(first.result.details, { name: "alpha", disposition: "started" });
+  assert.deepEqual(first.result.details, { name: "alpha", disposition: "started",
+    config: { provider: "fixture", model: "fixed", thinking: "low" } });
+  assert.equal(first.result.content[0].text, JSON.stringify({ name: "alpha", disposition: "started" }));
   await f.waitLog((r) => r.child && r.type === "request" && r.users?.includes("hold:alpha") === true);
   assert.deepEqual(f.reports(), [], "acceptance must precede child completion");
   const initial = (await f.logs()).find((r) => r.child && r.type === "ready")!;
@@ -156,7 +161,7 @@ test("offline real parent/child CLI: production tools, RPC work, queues, reports
   assert.match(JSON.stringify(duplicate.result.content), /already exists/);
   assert.equal((await f.logs()).filter((r) => r.child && r.type === "factory").length, 1);
   const steer = await send("alpha", "steering-message");
-  const follow = await send("alpha", "follow-up-message", "followUp");
+  const follow = await send("alpha", "follow-up-message", true);
   assert.deepEqual(steer.result.details, { name: "alpha", disposition: "queued" });
   assert.deepEqual(follow.result.details, { name: "alpha", disposition: "queued" });
   const inputs = (await f.logs()).filter((r) => r.pid === alpha && r.type === "input");

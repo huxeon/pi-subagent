@@ -60,10 +60,11 @@ test("only settled reads last assistant text; no event text, thinking, tool outp
     customType: "subagent.report",
     content: `Subagent: ${spawn.name}\n\n${client.text}`,
     display: true,
+    details: { name: spawn.name, text: client.text },
   }, { deliverAs: "steer", triggerTurn: true }]]);
   assert.equal(methods(client).filter((method) => method === "getLastAssistantText").length, 1);
   assert.equal(client.listeners.size, 1);
-  await manager.send({ ...send, mode: "followUp" }); // Reporting does not terminate the child.
+  await manager.send({ ...send, followUp: true }); // Reporting does not terminate the child.
   assert.ok(!methods(client).includes("stop"));
   await manager.shutdown();
 });
@@ -74,12 +75,14 @@ test("null is explicit, empty string is preserved, and successive runs report on
   client.emit(settled);
   await nextTurn();
   assert.equal(deliveries[0][0].content, `Subagent: ${spawn.name}\n\n(No assistant text available.)`);
+  assert.deepEqual(deliveries[0][0].details, { name: spawn.name, text: null });
   for (const text of ["", "second run result"]) {
     await manager.send(send);
     client.text = text;
     client.emit(settled);
     await nextTurn();
     assert.equal(deliveries.at(-1)![0].content, `Subagent: ${spawn.name}\n\n${text}`);
+    assert.deepEqual(deliveries.at(-1)![0].details, { name: spawn.name, text });
   }
   assert.equal(deliveries.length, 3);
   assert.equal(methods(client).filter((method) => method === "getLastAssistantText").length, 3);
@@ -95,7 +98,7 @@ test("many sends merge into one settled report and handled requires no settled",
   assert.equal(deliveries.length, 0);
   assert.ok(!methods(client).includes("getLastAssistantText"));
   client.disposition = "queued";
-  await Promise.all([manager.send(send), manager.send({ ...send, mode: "followUp" }), manager.send(send)]);
+  await Promise.all([manager.send(send), manager.send({ ...send, followUp: true }), manager.send(send)]);
   client.text = "merged result";
   client.emit(settled);
   await nextTurn();

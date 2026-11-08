@@ -344,7 +344,7 @@ test("invalid inputs/config and unknown names fail without creating or reserving
   await assert.rejects(manager.send(send), /Unknown subagent/);
   assert.equal(clients.length, 0);
   await manager.spawn(spawn, parent);
-  for (const invalid of [{ ...send, mode: "invalid" }, { ...send, message: " " }, { ...send, action: "spawn" }]) {
+  for (const invalid of [{ ...send, followUp: "invalid" }, { ...send, mode: "followUp" }, { ...send, message: " " }, { ...send, action: "spawn" }]) {
     await assert.rejects(manager.send(invalid as SendInput));
   }
   assert.deepEqual(methods(clients[0]), ["start", "onEvent", "prompt"]);
@@ -358,9 +358,9 @@ test("send uses only prompt, preserving modes and dispositions for idle or strea
     client.state.isStreaming = isStreaming;
     for (const disposition of ["started", "queued", "handled"] as const) {
       client.disposition = disposition;
-      for (const mode of [undefined, "steer", "followUp"] as const) {
-        assert.deepEqual(await manager.send({ ...send, mode }), { name: send.name, disposition });
-        assert.deepEqual(client.calls.at(-1), { method: "prompt", args: [send.message, undefined, mode ?? "steer"] });
+      for (const followUp of [undefined, false, true]) {
+        assert.deepEqual(await manager.send({ ...send, followUp }), { name: send.name, disposition });
+        assert.deepEqual(client.calls.at(-1), { method: "prompt", args: [send.message, undefined, followUp ? "followUp" : "steer"] });
       }
     }
   }
@@ -378,7 +378,7 @@ test("send waits for its own acceptance without serializing concurrent sends or 
   const prompt = t.mock.method(client, "prompt", () => submissions++ === 0 ? firstAck.promise : secondAck.promise);
   let firstReturned = false;
   const first = manager.send(send).then((result) => { firstReturned = true; return result; });
-  const second = manager.send({ ...send, mode: "followUp" });
+  const second = manager.send({ ...send, followUp: true });
   assert.equal(prompt.mock.callCount(), 2);
   assert.equal(firstReturned, false);
   secondAck.resolve("queued");

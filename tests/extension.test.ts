@@ -5,9 +5,12 @@ import { setImmediate as nextTurn } from "node:timers/promises";
 import { test } from "node:test";
 import type {
   ExtensionAPI, ExtensionContext, ExtensionHandler, ExtensionToolContext,
-  SessionShutdownEvent, ToolDefinition,
+  MessageRenderer, SessionShutdownEvent, SessionStartEvent, Theme, ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import type { TUI } from "@earendil-works/pi-tui";
 import extension from "../index.ts";
+import { STATUS_WIDGET_KEY } from "../src/ui.ts";
+import { renderSubagentReport, subagentToolRenderers } from "../src/render.ts";
 import { THINKING_LEVELS } from "../src/config.ts";
 import { SubagentManager } from "../src/manager.ts";
 import type { subagentParameters } from "../src/tools.ts";
@@ -29,16 +32,22 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-/** Only the three APIs used in production; unexpected registration/API access fails. */
+/** Only production APIs; unexpected registration/API access fails. */
 function fakeAPI() {
   const tools: ToolDefinition[] = [];
+  const renderers = new Map<string, MessageRenderer>();
   const shutdowns: ExtensionHandler<SessionShutdownEvent>[] = [];
+  const starts: ExtensionHandler<SessionStartEvent>[] = [];
   const deliveries: Parameters<ParentMessageSender>[] = [];
   const api = {
     registerTool(tool: ToolDefinition) { tools.push(tool); },
-    on(event: string, handler: ExtensionHandler<SessionShutdownEvent>) {
-      assert.equal(event, "session_shutdown");
-      shutdowns.push(handler);
+    registerMessageRenderer(type: string, renderer: MessageRenderer) { renderers.set(type, renderer); },
+    on(event: string, handler: ExtensionHandler<SessionShutdownEvent> | ExtensionHandler<SessionStartEvent>) {
+      if (event === "session_shutdown") shutdowns.push(handler as ExtensionHandler<SessionShutdownEvent>);
+      else {
+        assert.equal(event, "session_start");
+        starts.push(handler as ExtensionHandler<SessionStartEvent>);
+      }
       return () => {};
     },
     sendMessage(...args: Parameters<ParentMessageSender>) {
@@ -51,7 +60,10 @@ function fakeAPI() {
     return Reflect.get(target, key, receiver);
   } }) as unknown as ExtensionAPI;
   return {
-    pi, tools, shutdowns, deliveries,
+    pi, tools, renderers, shutdowns, starts, deliveries,
+    async start(ctx: ExtensionContext) {
+      for (const handler of starts) await handler({ type: "session_start", reason: "startup" }, ctx);
+    },
     call(input: unknown, ctx = toolContext()) {
       assert.equal(tools.length, 1);
       return tools[0].execute("tool-call", input, undefined, undefined, ctx);
@@ -75,6 +87,62 @@ function fixture() {
   return { ...host, clients, configs };
 }
 
+test("production entry connects event-driven status widget and clears it for every shutdown reason", async (t) => {
+  for (const reason of ["quit", "reload", "new", "resume", "fork"] as const) {
+    const host = fixture();
+    t.after(() => host.shutdown(reason));
+    type Factory = Exclude<Parameters<ExtensionContext["ui"]["setWidget"]>[1], undefined>;
+    const widgets: (Factory | undefined)[] = [];
+    const ctx = { mode: "tui", ui: { setWidget(key: string, content: Factory | undefined) {
+      assert.equal(key, STATUS_WIDGET_KEY);
+      widgets.push(content);
+    } } } as unknown as ExtensionContext;
+    await host.start(ctx);
+    assert.equal(widgets.length, 1);
+    assert.equal(widgets.at(-1), undefined);
+    await host.call(spawn);
+    const theme = { fg: (_token: string, text: string) => text } as Theme;
+    const rendered = () => widgets.at(-1)!({} as TUI, theme).render(120).join("\n");
+    assert.match(rendered(), /idle/);
+    const child = host.clients[0];
+    const stale = [...child.listeners][0];
+    child.emit({ type: "agent_start" });
+    assert.match(rendered(), /working/);
+    await host.call(send);
+    assert.match(rendered(), /working/);
+    assert.equal(host.deliveries.length, 0, "status updates do not create model messages");
+    const text = deferred<string | null>();
+    t.mock.method(child, "getLastAssistantText", () => text.promise);
+    child.emit(settled);
+    assert.match(rendered(), /idle/, "UI must update before result read finishes");
+    assert.equal(host.deliveries.length, 0);
+    assert.equal(child.calls.some((c) => c.method === "getState"), false);
+    await host.shutdown(reason);
+    assert.equal(widgets.at(-1), undefined);
+    const count = widgets.length;
+    stale({ type: "agent_start" });
+    stale(settled);
+    text.resolve("late result");
+    await nextTurn();
+    assert.equal(widgets.length, count);
+    assert.equal(host.deliveries.length, 0);
+  }
+});
+
+test("production status UI is not accessed in RPC, JSON or print sessions", async (t) => {
+  for (const mode of ["rpc", "json", "print"] as const) {
+    const host = fixture();
+    t.after(() => host.shutdown());
+    await host.start({ mode, get ui() { throw new Error("non-TUI UI access"); } } as unknown as ExtensionContext);
+    await host.call(spawn);
+    host.clients[0].emit({ type: "agent_start" });
+    host.clients[0].emit(settled);
+    await nextTurn();
+    assert.equal(host.deliveries.length, 1, "normal reports still work outside TUI");
+    await host.shutdown();
+  }
+});
+
 test("root factory registers one direct subagent tool, object schema and asynchronous guidance", () => {
   const host = fixture();
   assert.equal(host.clients.length, 0);
@@ -87,11 +155,11 @@ test("root factory registers one direct subagent tool, object schema and asynchr
   const schema = tool.parameters as typeof subagentParameters;
   assert.equal(schema.type, "object");
   assert.deepEqual(schema.required, ["action", "name", "message"]);
-  assert.deepEqual(Object.keys(schema.properties!), ["action", "name", "message", "provider", "model", "thinking", "mode"]);
+  assert.deepEqual(Object.keys(schema.properties!), ["action", "name", "message", "provider", "model", "thinking", "followUp"]);
   assert.deepEqual(schema.properties!.action.enum, ["spawn", "send"]);
   assert.deepEqual(schema.properties!.thinking.enum, THINKING_LEVELS);
-  assert.deepEqual(schema.properties!.mode.enum, ["steer", "followUp"]);
-  assert.equal(schema.properties!.mode.default, "steer");
+  assert.equal(schema.properties!.followUp.type, "boolean");
+  assert.equal(schema.properties!.followUp.default, false);
   for (const key of ["name", "message", "provider", "model"] as const) {
     assert.equal(schema.properties![key].type, "string");
     assert.equal(schema.properties![key].minLength, 1);
@@ -104,8 +172,9 @@ test("root factory registers one direct subagent tool, object schema and asynchr
   assert.match(tool.description, /stay alive.*more messages/);
   assert.match(tool.description, /handled may produce no report/);
   assert.match(tool.description, /provider\/model.*together/);
-  assert.equal(tool.renderCall, undefined);
-  assert.equal(tool.renderResult, undefined);
+  assert.equal(tool.renderCall, subagentToolRenderers.renderCall);
+  assert.equal(tool.renderResult, subagentToolRenderers.renderResult);
+  assert.equal(host.renderers.get("subagent.report"), renderSubagentReport);
 });
 
 test("factory, including the production default, starts no clients, processes, timers or watchers", (t) => {
@@ -154,10 +223,10 @@ test("tool delegates parsed spawn/send inputs, defaults and invocation-time pare
   assert.deepEqual(captured, { cwd: "/first", model: { provider: "first-p", id: "first-m" }, thinkingLevel: "low" });
   const unusedContext = new Proxy({} as ExtensionToolContext, { get() { throw new Error("send must not read parent config"); } });
   await host.call(send, unusedContext);
-  await host.call({ ...send, mode: "followUp" }, unusedContext);
-  assert.deepEqual(sendCalls, [[{ ...send, mode: "steer" }], [{ ...send, mode: "followUp" }]]);
+  await host.call({ ...send, followUp: true }, unusedContext);
+  assert.deepEqual(sendCalls, [[{ ...send, followUp: false }], [{ ...send, followUp: true }]]);
   assert.deepEqual(first, { content: [{ type: "text", text: JSON.stringify({ name: spawn.name, disposition: "started" }) }],
-    details: { name: spawn.name, disposition: "started" } });
+    details: { name: spawn.name, disposition: "started", config: { provider: "first-p", model: "first-m", thinking: "max" } } });
   await host.shutdown();
 });
 
@@ -168,11 +237,10 @@ test("production manager receives fresh cwd/model/thinking and accepts thinking 
   for (const pair of [undefined, { provider: "explicit-p", model: "explicit-m" }]) {
     for (const thinking of [undefined, "max"] as const) {
       const snapshot = { ...parent, cwd: `/call-${i}` };
-      await host.call({ ...spawn, name: String(i++), ...pair, ...(thinking ? { thinking } : {}) }, toolContext(snapshot));
-      assert.deepEqual(host.configs.at(-1), {
-        cwd: snapshot.cwd, provider: pair?.provider ?? "parent-p", model: pair?.model ?? "parent-m",
-        thinking: thinking ?? "medium",
-      });
+      const reply = await host.call({ ...spawn, name: String(i++), ...pair, ...(thinking ? { thinking } : {}) }, toolContext(snapshot));
+      const expected = { provider: pair?.provider ?? "parent-p", model: pair?.model ?? "parent-m", thinking: thinking ?? "medium" };
+      assert.deepEqual(host.configs.at(-1), { cwd: snapshot.cwd, ...expected });
+      assert.deepEqual(reply.details, { name: String(i - 1), disposition: "started", config: expected });
     }
   }
   await host.call({ ...spawn, provider: "p", model: "m", thinking: "off" }, toolContext({ cwd: "/explicit" }));
@@ -182,6 +250,26 @@ test("production manager receives fresh cwd/model/thinking and accepts thinking 
   assert.deepEqual(host.clients.at(-1)!.calls.at(-1), { method: "prompt", args: [send.message, undefined, "steer"] });
 });
 
+test("spawn presentation config is fixed before awaiting acceptance, not read from a later parent context", async (t) => {
+  const host = fixture();
+  t.after(() => host.shutdown());
+  const entered = deferred<void>();
+  const ack = deferred<PromptDisposition>();
+  t.mock.method(FakeRpcClient.prototype, "prompt", () => { entered.resolve(); return ack.promise; });
+  const current = { cwd: "/first", model: { provider: "original-p", id: "original-m" }, thinkingLevel: "low" as "low" | "high" };
+  const pending = host.call(spawn, toolContext(current));
+  await entered.promise;
+  current.model.provider = "later-p";
+  current.model.id = "later-m";
+  current.thinkingLevel = "high";
+  ack.resolve("started");
+  const result = await pending;
+  assert.deepEqual(result.details, { name: spawn.name, disposition: "started",
+    config: { provider: "original-p", model: "original-m", thinking: "low" } });
+  assert.deepEqual(result.content, [{ type: "text", text: JSON.stringify({ name: spawn.name, disposition: "started" }) }]);
+  assert.equal(host.clients[0].calls.some((call) => call.method === "getState"), false);
+});
+
 test("partial provider/model, invalid inputs, missing inherited configuration and RPC failures throw tool errors", async (t) => {
   const host = fixture();
   t.after(() => host.shutdown());
@@ -189,7 +277,7 @@ test("partial provider/model, invalid inputs, missing inherited configuration an
     await assert.rejects(host.call({ ...spawn, ...partial }), /provided together/);
   }
   for (const invalid of [{ ...spawn, name: " " }, { ...spawn, message: "" }, { ...spawn, thinking: "unknown" },
-    { ...send, mode: "unknown" }, { ...spawn, action: "stop" }]) {
+    { ...send, followUp: "unknown" }, { ...send, mode: "followUp" }, { ...spawn, action: "stop" }]) {
     await assert.rejects(host.call(invalid));
   }
   await assert.rejects(host.call(spawn, toolContext({ cwd: "/missing" })), /parent model provider/);
@@ -224,7 +312,8 @@ test("spawn/send return each RPC acceptance without waiting for settled or fetch
     assert.equal(returned, false);
     assert.deepEqual(prompt.mock.calls[0].arguments, [spawn.message]);
     spawnAck.resolve(disposition);
-    assert.deepEqual((await spawning).details, { name: spawn.name, disposition });
+    assert.deepEqual((await spawning).details, { name: spawn.name, disposition,
+      config: { provider: "parent-p", model: "parent-m", thinking: "medium" } });
     let sent = false;
     const sending = host.call(send).then((result) => { sent = true; return result; });
     assert.equal(sent, false);
@@ -243,7 +332,7 @@ test("production pi.sendMessage binding uses exact report content and steer/trig
   const host = fixture();
   t.after(() => host.shutdown());
   await host.call(spawn);
-  await host.call({ ...send, mode: "followUp" });
+  await host.call({ ...send, followUp: true });
   const client = host.clients[0];
   for (const text of [" full result\n第二行 ", null]) {
     client.text = text;
@@ -252,6 +341,7 @@ test("production pi.sendMessage binding uses exact report content and steer/trig
     assert.deepEqual(host.deliveries.at(-1), [{
       customType: "subagent.report", display: true,
       content: `Subagent: ${spawn.name}\n\n${text ?? "(No assistant text available.)"}`,
+      details: { name: spawn.name, text },
     }, { deliverAs: "steer", triggerTurn: true }]);
   }
   assert.equal(client.listeners.size, 1);
