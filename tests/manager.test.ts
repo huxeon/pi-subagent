@@ -8,7 +8,7 @@ import type {
 } from "../src/types.ts";
 import { FakeRpcClient } from "./helpers/fake-rpc-client.ts";
 
-const spawn: SpawnInput = { action: "spawn", name: "Reviewer", message: " initial task \n" };
+const spawn = { action: "spawn", name: "Reviewer", message: " initial task \n" } satisfies SpawnInput;
 const send: SendInput = { action: "send", name: "Reviewer", message: " next task \n" };
 const parent: ParentConfigSnapshot = {
   cwd: "/parent/workspace", model: { provider: "parent-p", id: "parent-m" }, thinkingLevel: "medium",
@@ -56,7 +56,9 @@ test("spawn waits for acceptance, never settled, and preserves every disposition
       const spawning = manager.spawn(spawn, parent).then((value) => { returned = true; return value; });
       await entered.promise;
       assert.equal(returned, false);
-      assert.deepEqual(prompt.mock.calls[0].arguments, [spawn.message]);
+      const [call] = prompt.mock.calls;
+      assert.ok(call);
+      assert.deepEqual(call.arguments, [spawn.message]);
       acceptance.resolve(disposition);
       assert.deepEqual(await spawning, { name: spawn.name, disposition });
       // No settled event has been emitted, even for handled. Child remains usable.
@@ -104,11 +106,12 @@ test("the name is reserved even before a reentrant synchronous factory", async (
 });
 
 test("different names start concurrently and can finish in reverse order", { timeout: 2000 }, async (t) => {
-  const gates = [deferred<void>(), deferred<void>()];
+  const gates = [deferred<void>(), deferred<void>()] as const;
   let index = 0;
   const { manager, clients } = fixture(() => {
     const client = new FakeRpcClient();
     const gate = gates[index++];
+    assert.ok(gate);
     t.mock.method(client, "start", () => gate.promise);
     return client;
   });
@@ -117,10 +120,12 @@ test("different names start concurrently and can finish in reverse order", { tim
   assert.equal(clients.length, 2);
   gates[1].resolve();
   assert.deepEqual(await second, { name: "other", disposition: "started" });
-  assert.equal(clients[0].listeners.size, 0);
+  const [firstClient] = clients;
+  assert.ok(firstClient);
+  assert.equal(firstClient.listeners.size, 0);
   gates[0].resolve();
   await first;
-  assert.equal(clients[0].listeners.size, 1);
+  assert.equal(firstClient.listeners.size, 1);
 });
 
 test("each manager has independent exact name keys", async () => {
@@ -274,7 +279,9 @@ test("async start failure cleans only its own child and releases the reserved na
   await rejected;
   assert.deepEqual(methods(failed), ["stop"]); // No subscription/prompt before readiness.
   assert.deepEqual(await manager.send({ ...send, name: "other" }), { name: "other", disposition: "started" });
-  assert.ok(!methods(clients[1]).includes("stop"));
+  const otherClient = clients[1];
+  assert.ok(otherClient);
+  assert.ok(!methods(otherClient).includes("stop"));
   await manager.spawn(spawn, parent);
   assert.equal(clients.length, 3);
 });
@@ -298,6 +305,7 @@ test("async initial prompt rejection unsubscribes before stopping and holds the 
   const rejected = assert.rejects(spawning, (actual) => actual === error);
   await entered.promise;
   const staleListener = [...client.listeners][0];
+  assert.ok(staleListener);
   acceptance.reject(error);
   await stopEntered.promise;
   await assert.rejects(manager.spawn(spawn, parent), /already exists/);
@@ -347,17 +355,20 @@ test("invalid inputs/config and unknown names fail without creating or reserving
   for (const invalid of [{ ...send, followUp: "invalid" }, { ...send, mode: "followUp" }, { ...send, message: " " }, { ...send, action: "spawn" }]) {
     await assert.rejects(manager.send(invalid as SendInput));
   }
-  assert.deepEqual(methods(clients[0]), ["start", "onEvent", "prompt"]);
+  const [client] = clients;
+  assert.ok(client);
+  assert.deepEqual(methods(client), ["start", "onEvent", "prompt"]);
 });
 
 test("send uses only prompt, preserving delivery modes and acceptance dispositions", async () => {
   const { manager, clients } = fixture();
   await manager.spawn(spawn, parent);
   const client = clients[0];
+  assert.ok(client);
   for (const disposition of ["started", "queued", "handled"] as const) {
     client.disposition = disposition;
     for (const followUp of [undefined, false, true]) {
-      assert.deepEqual(await manager.send({ ...send, followUp }), { name: send.name, disposition });
+      assert.deepEqual(await manager.send({ ...send, ...(followUp !== undefined ? { followUp } : {}) }), { name: send.name, disposition });
       assert.deepEqual(client.calls.at(-1), { method: "prompt", args: [send.message, undefined, followUp ? "followUp" : "steer"] });
     }
   }

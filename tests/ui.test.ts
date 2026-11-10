@@ -21,6 +21,7 @@ test("state labels use distinct theme colors and vertical dividers use dim", () 
   const codes = { warning: 33, success: 32, dim: 90, muted: 37 };
   const theme: Pick<Theme, "fg"> = { fg: (token, text) => `\x1b[${codes[token as keyof typeof codes]}m${text}\x1b[0m` };
   const [line] = renderStatusLines(statuses, 80, theme);
+  assert.ok(line !== undefined);
   assert.ok(line.includes("\x1b[33mworking\x1b[0m"));
   assert.ok(line.includes("\x1b[32midle\x1b[0m"));
   assert.ok(line.includes("\x1b[90m | \x1b[0m"));
@@ -45,15 +46,18 @@ test("layout wraps whole entries, truncates long names, and fits narrow, CJK, em
     }
   }
   const lines = renderStatusLines(names, 40, plainTheme);
-  assert.ok(lines[0].includes("..."));
-  assert.ok(lines[0].endsWith("working"));
-  assert.ok(lines[1].endsWith("idle"));
+  const [first, second] = lines;
+  assert.ok(first !== undefined && second !== undefined);
+  assert.ok(first.includes("..."));
+  assert.ok(first.endsWith("working"));
+  assert.ok(second.endsWith("idle"));
 });
 
 test("name control sequences are display-only sanitized and cannot inject terminal output or lines", () => {
   const name = "raw\n\t\x1b[31mred\x1b[0m\x1b]0;title\x07\r\x00\u0085\u2028\u2029end";
-  const input: SubagentStatus[] = [{ name, state: "idle" }];
+  const input = [{ name, state: "idle" }] as const;
   const [line] = renderStatusLines(input, 120, plainTheme);
+  assert.ok(line !== undefined);
   assert.match(line, /raw red/);
   assert.match(line, /end · idle$/);
   assert.doesNotMatch(line, /[\x00-\x1f\x7f-\x9f\u2028\u2029]/);
@@ -65,7 +69,7 @@ test("component is TUI-only, clears empty/disposed widgets and renders current t
   type Factory = (tui: TUI, theme: Theme) => Component;
   const calls: { key: string; content: Factory | undefined; placement?: string }[] = [];
   const ui = { setWidget(key: string, content: Factory | undefined, options?: { placement: string }) {
-    calls.push({ key, content, placement: options?.placement });
+    calls.push({ key, content, ...(options ? { placement: options.placement } : {}) });
   } };
   const ctx = { mode: "tui", ui } as unknown as ExtensionContext;
   const widget = createStatusWidget();
@@ -82,10 +86,14 @@ test("component is TUI-only, clears empty/disposed widgets and renders current t
   const theme = { fg: (_token: string, text: string) => `\x1b[${color}m${text}\x1b[0m` } as Theme;
   const component = calls.at(-1)!.content!({} as TUI, theme);
   assert.deepEqual(component.render(80).map(stripTerminalSequences), renderStatusLines(statuses, 80, plainTheme));
-  assert.ok(component.render(80)[0].includes("\x1b[31m"));
+  const [initialLine] = component.render(80);
+  assert.ok(initialLine !== undefined);
+  assert.ok(initialLine.includes("\x1b[31m"));
   color = 34;
   component.invalidate();
-  assert.ok(component.render(80)[0].includes("\x1b[34m"), "theme styling is computed at render time");
+  const [updatedLine] = component.render(80);
+  assert.ok(updatedLine !== undefined);
+  assert.ok(updatedLine.includes("\x1b[34m"), "theme styling is computed at render time");
   assert.equal(component.render(32).length, 2, "resize recomputes wrapping");
   for (const line of component.render(12)) assert.ok(visibleWidth(line) <= 12);
   widget.update([]);

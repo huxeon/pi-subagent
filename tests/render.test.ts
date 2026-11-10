@@ -42,13 +42,18 @@ test("tool title is entirely bold, space-separated and uncolored; follow-up is a
   const call = renderCall(spawn, theme, context());
   assert.deepEqual(plain(call), ["subagent spawn reviewer", "Review concurrency."]);
   const header = call.render(100)[0];
+  assert.ok(header !== undefined);
   assert.ok(header.startsWith("\x1b[1msubagent spawn reviewer\x1b[22m"));
   assert.doesNotMatch(header, /\x1b\[3[0-9]m/);
   for (const followUp of [undefined, false, true]) {
     const args = { ...spawn, action: "send", followUp };
     const component = renderCall(args, theme, context(args));
     assert.equal(plain(component)[0], `subagent send reviewer${followUp ? " (follow-up)" : ""}`);
-    if (followUp) assert.ok(component.render(100)[0].includes("reviewer\x1b[22m (follow-up)"));
+    if (followUp) {
+      const [header] = component.render(100);
+      assert.ok(header !== undefined);
+      assert.ok(header.includes("reviewer\x1b[22m (follow-up)"));
+    }
   }
 });
 
@@ -68,10 +73,12 @@ test("success footers show every capitalized disposition, and only spawn include
   for (const disposition of ["started", "queued", "handled"] as const) {
     const details: SubmissionDetails = { name: spawn.name, disposition, config };
     const result = { content: [{ type: "text" as const, text: JSON.stringify({ name: spawn.name, disposition }) }], details };
-    const capitalized = disposition[0].toUpperCase() + disposition.slice(1);
+    const capitalized = disposition.charAt(0).toUpperCase() + disposition.slice(1);
     const spawned = renderResult(result, { expanded: false, isPartial: false }, theme, context());
     assert.deepEqual(plain(spawned), ["", `✓ ${capitalized} provider/model:high`]);
-    assert.ok(spawned.render(100)[1].includes("\x1b[32m✓\x1b[0m"));
+    const footer = spawned.render(100)[1];
+    assert.ok(footer !== undefined);
+    assert.ok(footer.includes("\x1b[32m✓\x1b[0m"));
     const sent = renderResult(result, { expanded: false, isPartial: false }, theme, context({ action: "send" }));
     assert.deepEqual(plain(sent), ["", `✓ ${capitalized}`]);
     fits(spawned);
@@ -84,7 +91,9 @@ test("errors show a cross and reason without inventing a disposition, including 
   const result = { content: [{ type: "text" as const, text: "Unknown subagent reviewer" }], details: undefined };
   const component = renderResult(result, { expanded: false, isPartial: false }, theme, context(spawn, { isError: true }));
   assert.deepEqual(plain(component), ["", "✗ Unknown subagent reviewer"]);
-  assert.ok(component.render(100)[1].includes("\x1b[31m✗"));
+  const footer = component.render(100)[1];
+  assert.ok(footer !== undefined);
+  assert.ok(footer.includes("\x1b[31m✗"));
   assert.doesNotMatch(plain(component).join("\n"), /✓|Started|Queued|Handled/);
   fits(component);
 });
@@ -94,7 +103,9 @@ test("old or incomplete tool metadata does not crash or fabricate inherited mode
     fits(renderCall(args, theme, context(args)));
   }
   const legacy = { ...spawn, action: "send", mode: "followUp" };
-  assert.match(plain(renderCall(legacy, theme, context(legacy)))[0], /\(follow-up\)$/);
+  const [legacyHeader] = plain(renderCall(legacy, theme, context(legacy)));
+  assert.ok(legacyHeader !== undefined);
+  assert.match(legacyHeader, /\(follow-up\)$/);
   const oldResult = { content: [], details: { name: "reviewer", disposition: "started" as const } };
   assert.deepEqual(plain(renderResult(oldResult, { expanded: false, isPartial: false }, theme, context())), ["", "✓ Started"]);
   const unknown = { content: [{ type: "text" as const, text: "external result" }], details: undefined };
@@ -124,7 +135,9 @@ test("report previews cap body visual lines at eight, expand fully and respect o
   assert.ok(!lines.join("\n").includes("Line-24"));
   assert.ok(plain(expanded).join("\n").includes("Line-24"));
   const padded = renderSubagentReport(report("body"), { ...options, outputPad: 4 }, theme)!;
-  assert.ok(plain(padded)[1].startsWith("    subagent report"));
+  const paddedHeader = plain(padded)[1];
+  assert.ok(paddedHeader !== undefined);
+  assert.ok(paddedHeader.startsWith("    subagent report"));
   fits(collapsed);
 });
 

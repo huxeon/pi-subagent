@@ -7,21 +7,21 @@ import type { RpcAdapter, RpcAdapterFactory } from "./types.ts";
 
 const PI_PACKAGE = "@earendil-works/pi-coding-agent";
 
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 /** Locate the CLI of the loaded SDK/host, never argv[1], PATH, or the child's cwd. */
 export function resolvePiCliPath(): string {
   // This public SDK function also works when Pi's extension loader supplies host/virtual modules.
   // Honor its PI_PACKAGE_DIR override, but reject relative roots and a different package/version.
   const directory = getPackageDir();
   if (!isAbsolute(directory)) throw new Error("Pi package directory must be absolute");
-  const manifest = JSON.parse(readFileSync(join(directory, "package.json"), "utf8")) as {
-    name?: string;
-    version?: string;
-    bin?: { pi?: string };
-  };
-  if (manifest.name !== PI_PACKAGE || manifest.version !== VERSION) {
+  const manifest: unknown = JSON.parse(readFileSync(join(directory, "package.json"), "utf8"));
+  if (!isObject(manifest) || manifest.name !== PI_PACKAGE || manifest.version !== VERSION) {
     throw new Error(`Pi package metadata does not match loaded SDK ${PI_PACKAGE}@${VERSION}`);
   }
-  if (typeof manifest.bin?.pi !== "string" || !manifest.bin.pi) {
+  if (!isObject(manifest.bin) || typeof manifest.bin.pi !== "string" || !manifest.bin.pi) {
     throw new Error(`${PI_PACKAGE} does not declare a pi CLI`);
   }
   const cliPath = realpathSync(resolve(directory, manifest.bin.pi));

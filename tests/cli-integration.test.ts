@@ -139,7 +139,7 @@ test("offline real parent/child CLI: production tools, RPC work, queues, reports
   await f.start();
   const spawn = (name: string, message: string, config: Partial<SubagentInput> = {}) =>
     f.call({ action: "spawn", name, message, ...config } as SubagentInput);
-  const send = (name: string, message: string, followUp?: boolean) => f.call({ action: "send", name, message, followUp });
+  const send = (name: string, message: string, followUp?: boolean) => f.call({ action: "send", name, message, ...(followUp !== undefined ? { followUp } : {}) });
 
   const first = await spawn("alpha", "hold:alpha");
   assert.equal(first.isError, false);

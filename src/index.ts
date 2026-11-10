@@ -13,7 +13,7 @@ export default function extension(
   // Construction has no background resources; each factory call owns a fresh runtime.
   const widget = createStatusWidget();
   const manager = new SubagentManager({
-    createClient: options.createClient,
+    ...(options.createClient ? { createClient: options.createClient } : {}),
     sendMessage: (message, delivery) => pi.sendMessage(message, delivery),
     onStatusChange: (statuses) => widget.update(statuses),
   });

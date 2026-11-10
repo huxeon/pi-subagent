@@ -22,6 +22,7 @@ test("Pi loads the stable root entry without starting a session or background re
   assert.deepEqual(loaded.errors, []);
   assert.equal(loaded.extensions.length, 1);
   const [extension] = loaded.extensions;
+  assert.ok(extension);
   assert.deepEqual([...extension.tools.keys()], ["subagent"]);
   assert.equal(extension.tools.get("subagent")!.definition.name, "subagent");
   assert.equal(typeof extension.tools.get("subagent")!.definition.renderCall, "function");

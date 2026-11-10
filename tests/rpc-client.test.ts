@@ -47,10 +47,13 @@ test("CLI is the resolved SDK package's readable absolute bin, independent of cw
     const manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
     assert.equal(cli, realpathSync(resolve(packageRoot, manifest.bin.pi)));
     assert.notEqual(cli, process.argv[1]);
-    assert.equal(fixture().options[0].cliPath, cli);
+    const [options] = fixture().options;
+    assert.ok(options);
+    assert.equal(options.cliPath, cli);
   } finally {
     process.chdir(originalCwd);
-    process.argv[1] = originalArgv;
+    if (originalArgv === undefined) delete process.argv[1];
+    else process.argv[1] = originalArgv;
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -74,6 +77,32 @@ test("invalid package roots/metadata fail before constructing any client", async
       await writeFile(join(root, "package.json"), JSON.stringify(manifest));
       assert.throws(() => factory(config));
     }
+    assert.equal(creations, 0);
+  } finally {
+    if (original === undefined) delete process.env.PI_PACKAGE_DIR;
+    else process.env.PI_PACKAGE_DIR = original;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("untrusted manifest shapes are validated before constructing a client", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-subagent-untrusted-metadata-"));
+  const original = process.env.PI_PACKAGE_DIR;
+  let creations = 0;
+  const factory = createRpcAdapterFactory(() => { creations++; return new FakeRpcClient(); });
+  const identity = { name: "@earendil-works/pi-coding-agent", version: VERSION };
+  try {
+    process.env.PI_PACKAGE_DIR = root;
+    for (const manifest of [null, [], "text", 42, true, {}, { name: 42, version: VERSION }]) {
+      await writeFile(join(root, "package.json"), JSON.stringify(manifest));
+      assert.throws(() => factory(config), /metadata does not match/);
+    }
+    for (const bin of [undefined, null, [], "pi.js", 42, true, {}, { pi: null }, { pi: 42 }, { pi: "" }]) {
+      await writeFile(join(root, "package.json"), JSON.stringify({ ...identity, bin }));
+      assert.throws(() => factory(config), /does not declare a pi CLI/);
+    }
+    await writeFile(join(root, "package.json"), "{not-json");
+    assert.throws(() => factory(config), SyntaxError);
     assert.equal(creations, 0);
   } finally {
     if (original === undefined) delete process.env.PI_PACKAGE_DIR;

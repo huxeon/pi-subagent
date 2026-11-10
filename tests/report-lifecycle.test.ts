@@ -23,11 +23,15 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function fixture(clients = [new FakeRpcClient()]) {
+function fixture(clients: [FakeRpcClient, ...FakeRpcClient[]] = [new FakeRpcClient()]) {
   const deliveries: Parameters<ParentMessageSender>[] = [];
   let index = 0;
   const manager = new SubagentManager({
-    createClient: () => clients[index++],
+    createClient: () => {
+      const client = clients[index++];
+      assert.ok(client, "fixture must provide a client for each spawn");
+      return client;
+    },
     sendMessage: (...args) => { deliveries.push(args); },
   });
   return { manager, clients, deliveries };
@@ -74,8 +78,10 @@ test("null is explicit, empty string is preserved, and successive runs report on
   await manager.spawn(spawn, parent);
   client.emit(settled);
   await nextTurn();
-  assert.equal(deliveries[0][0].content, `Subagent: ${spawn.name}\n\n(No assistant text available.)`);
-  assert.deepEqual(deliveries[0][0].details, { name: spawn.name, text: null });
+  const [delivery] = deliveries;
+  assert.ok(delivery);
+  assert.equal(delivery[0].content, `Subagent: ${spawn.name}\n\n(No assistant text available.)`);
+  assert.deepEqual(delivery[0].details, { name: spawn.name, text: null });
   for (const text of ["", "second run result"]) {
     await manager.send(send);
     client.text = text;
@@ -103,16 +109,22 @@ test("many sends merge into one settled report and handled requires no settled",
   client.emit(settled);
   await nextTurn();
   assert.equal(deliveries.length, 1);
-  assert.deepEqual(deliveries[0][1], { deliverAs: "steer", triggerTurn: true });
+  const [delivery] = deliveries;
+  assert.ok(delivery);
+  assert.deepEqual(delivery[1], { deliverAs: "steer", triggerTurn: true });
   await manager.shutdown();
 });
 
 test("overlapping settled callbacks each start their own read at the event boundary", { timeout: 2000 }, async (t) => {
   const { manager, clients: [client], deliveries } = fixture();
   await manager.spawn(spawn, parent);
-  const reads = [deferred<string | null>(), deferred<string | null>()];
+  const reads = [deferred<string | null>(), deferred<string | null>()] as const;
   let index = 0;
-  const read = t.mock.method(client, "getLastAssistantText", () => reads[index++].promise);
+  const read = t.mock.method(client, "getLastAssistantText", () => {
+    const pending = reads[index++];
+    assert.ok(pending);
+    return pending.promise;
+  });
   client.emit(settled);
   await manager.send(send);
   client.emit({ ...settled, aborted: true }); // Aborted settled is still a report boundary.
@@ -139,6 +151,7 @@ test("sync/async read and delivery failures are caught, without retries, crash r
         const manager = new SubagentManager({ createClient: () => client, sendMessage() {
           deliveryAttempts++;
           if (failDelivery) return fail();
+          return undefined;
         } });
         await manager.spawn(spawn, parent);
         const read = t.mock.method(client, "getLastAssistantText", boundary === "read" ? fail : async () => "ok");
@@ -174,6 +187,7 @@ test("shutdown during text read drops the late result and old listeners; new run
   const text = deferred<string | null>();
   const read = t.mock.method(client, "getLastAssistantText", () => text.promise);
   const stale = [...client.listeners][0];
+  assert.ok(stale);
   client.emit(settled);
   assert.equal(read.mock.callCount(), 1);
   const shutdown = manager.shutdown();
@@ -244,7 +258,7 @@ test("empty shutdown is terminal and returns the exact same promise on repeated 
 });
 
 test("parallel starting, initial-prompt and ready children are stopped without waiting for RPC completion", { timeout: 2000 }, async (t) => {
-  const clients = [new FakeRpcClient(), new FakeRpcClient(), new FakeRpcClient()];
+  const clients: [FakeRpcClient, FakeRpcClient, FakeRpcClient] = [new FakeRpcClient(), new FakeRpcClient(), new FakeRpcClient()];
   const { manager, deliveries } = fixture(clients);
   const start = deferred<void>();
   const prompt = deferred<PromptDisposition>();
@@ -258,7 +272,9 @@ test("parallel starting, initial-prompt and ready children are stopped without w
     t.mock.method(client, "stop", async () => {
       stops++;
       if (stops === clients.length) stopsEntered.resolve();
-      await stopGates[index].promise;
+      const stopGate = stopGates[index];
+      assert.ok(stopGate);
+      await stopGate.promise;
       live.delete(client);
     });
   }
@@ -268,6 +284,7 @@ test("parallel starting, initial-prompt and ready children are stopped without w
   await promptEntered.promise;
   await manager.spawn({ ...spawn, name: "ready" }, parent);
   const stale = [...clients[2].listeners][0];
+  assert.ok(stale);
   const shutdown = manager.shutdown();
   await stopsEntered.promise; // All stop calls start before *any* stop gate resolves.
   assert.equal(stops, 3);

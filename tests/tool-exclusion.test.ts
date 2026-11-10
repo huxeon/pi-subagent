@@ -129,7 +129,9 @@ for (const { exposure, production } of scenarios) {
         assert.equal(details.invalid.length, excluded ? 0 : 2);
         for (const outcome of details.invalid) {
           assert.equal(outcome.isError, true);
-          assert.match(outcome.result.content[0].text!, /provider and model must be provided together/);
+          const [content] = outcome.result.content;
+          assert.ok(content);
+          assert.match(content.text!, /provider and model must be provided together/);
         }
         assert.deepEqual(client.calls.filter(({ method }) => method === "prompt").map(({ args }) => args),
           excluded ? [] : [["offline task"], ["offline task", undefined, "steer"]]);

@@ -92,6 +92,7 @@ export default async function fixture(pi: ExtensionAPI) {
   pi.on("input", (event) => {
     log("input", { text: event.text, mode: event.streamingBehavior });
     if (event.text === "fixture-handled") return { action: "handled" };
+    return undefined;
   });
   pi.on("before_agent_start", (event) => { log("run", { messageType: event.messageType }); });
   pi.on("agent_settled", () => { log("settled"); });

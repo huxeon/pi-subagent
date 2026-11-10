@@ -22,11 +22,19 @@ interface SubagentHandle {
   readonly client: RpcAdapter;
 }
 
+/** Readiness guarantees a usable child; cleanup resources remain independently tracked.
+ * Resource slots must survive reentrant shutdown during factory/subscription calls.
+ */
+type Lifecycle =
+  | { readonly phase: "starting" }
+  | { readonly phase: "ready"; readonly child: SubagentHandle }
+  | { readonly phase: "failed" };
+
 interface Reservation {
-  phase: "starting" | "ready" | "failed";
+  lifecycle: Lifecycle;
   state: SubagentStatus["state"];
-  child?: SubagentHandle;
-  unsubscribe?: () => void;
+  child?: SubagentHandle | undefined;
+  unsubscribe?: (() => void) | undefined;
   cleanup?: Promise<void>;
 }
 
@@ -44,7 +52,7 @@ export class SubagentManager {
   private closed = false;
   private stopping?: Promise<void>;
   private readonly createClient: RpcAdapterFactory;
-  private readonly onStatusChange?: StatusReceiver;
+  private readonly onStatusChange: StatusReceiver | undefined;
 
   constructor(options: SubagentManagerOptions) {
     this.receiveReport = createReportReceiver(options.sendMessage);
@@ -61,7 +69,7 @@ export class SubagentManager {
     // Resolve plain values synchronously: neither parent nor input is read after startup begins.
     const config = resolveChildConfig(parsed, parent);
     this.assertOpen(); // Also guard reentrant configuration getters.
-    const record: Reservation = { phase: "starting", state: "idle" };
+    const record: Reservation = { lifecycle: { phase: "starting" }, state: "idle" };
     // Reserve before even calling the factory (which may itself re-enter the manager).
     this.records.set(name, record);
     try {
@@ -85,7 +93,7 @@ export class SubagentManager {
       this.assertCurrent(name, record);
       const disposition = await child.client.prompt(message);
       this.assertCurrent(name, record);
-      record.phase = "ready";
+      record.lifecycle = { phase: "ready", child };
       this.publishStatuses(); // Reveal the latest event state, never infer from disposition.
       this.assertCurrent(name, record);
       return { name, disposition };
@@ -106,10 +114,11 @@ export class SubagentManager {
     const record = this.records.get(parsed.name);
     if (!record) throw new Error(`Unknown subagent ${JSON.stringify(parsed.name)}`);
     // "starting" includes initial prompt acceptance. Do not introduce an implicit send queue.
-    if (record.phase !== "ready" || !record.child) {
+    const lifecycle = record.lifecycle;
+    if (lifecycle.phase !== "ready") {
       throw new Error(`Subagent ${JSON.stringify(parsed.name)} is not ready`);
     }
-    const disposition = await record.child.client.prompt(parsed.message, undefined, parsed.followUp ? "followUp" : "steer");
+    const disposition = await lifecycle.child.client.prompt(parsed.message, undefined, parsed.followUp ? "followUp" : "steer");
     this.assertCurrent(parsed.name, record);
     return { name: parsed.name, disposition };
   }
@@ -132,7 +141,7 @@ export class SubagentManager {
     if (record.state === state) return;
     record.state = state;
     // Events received before initial acceptance are retained but not yet displayed.
-    if (record.phase === "ready") this.publishStatuses();
+    if (record.lifecycle.phase === "ready") this.publishStatuses();
   }
 
   private publishStatuses(): void {
@@ -140,7 +149,7 @@ export class SubagentManager {
     const statuses: SubagentStatus[] = [];
     if (!this.closed) {
       for (const [name, record] of this.records) {
-        if (record.phase === "ready") statuses.push({ name, state: record.state });
+        if (record.lifecycle.phase === "ready") statuses.push({ name, state: record.state });
       }
     }
     try { this.onStatusChange(statuses); } catch { /* Presentation must not break RPC work or cleanup. */ }
@@ -151,7 +160,7 @@ export class SubagentManager {
   }
 
   private isCurrent(name: string, record: Reservation): boolean {
-    return !this.closed && this.records.get(name) === record && record.phase !== "failed";
+    return !this.closed && this.records.get(name) === record && record.lifecycle.phase !== "failed";
   }
 
   private assertCurrent(name: string, record: Reservation): void {
@@ -172,7 +181,7 @@ export class SubagentManager {
   }
 
   private cleanup(record: Reservation): Promise<void> {
-    record.phase = "failed";
+    record.lifecycle = { phase: "failed" };
     // Defer one microtask so reentrant factory/onEvent calls finish assigning resources.
     return record.cleanup ??= Promise.resolve().then(async () => {
       const unsubscribe = record.unsubscribe;

@@ -125,7 +125,7 @@ test("settled becomes idle before result reading completes or fails, and before 
 });
 
 test("visible snapshots use reservation order even when spawn acknowledgements arrive out of order", async (t) => {
-  const clients = [new FakeRpcClient(), new FakeRpcClient()];
+  const clients = [new FakeRpcClient(), new FakeRpcClient()] as const;
   const { manager, snapshots } = fixture([...clients]);
   t.after(() => manager.shutdown());
   const ack = deferred<PromptDisposition>();
@@ -149,6 +149,7 @@ test("shutdown clears synchronously, drops stale/starting events and cannot repu
   await manager.spawn(spawn, parent);
   client.emit(start);
   const stale = [...client.listeners][0];
+  assert.ok(stale);
   const stopping = deferred<void>();
   t.mock.method(client, "stop", () => stopping.promise);
   const shutdown = manager.shutdown();
@@ -170,6 +171,7 @@ test("shutdown clears synchronously, drops stale/starting events and cannot repu
   const rejected = assert.rejects(spawning, /closed/);
   await entered.promise;
   const late = [...starting.listeners][0];
+  assert.ok(late);
   await other.manager.shutdown();
   late(start);
   ack.resolve("started");

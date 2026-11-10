@@ -66,7 +66,9 @@ function fakeAPI() {
     },
     call(input: unknown, ctx = toolContext()) {
       assert.equal(tools.length, 1);
-      return tools[0].execute("tool-call", input, undefined, undefined, ctx);
+      const tool = tools[0];
+      assert.ok(tool);
+      return tool.execute("tool-call", input, undefined, undefined, ctx);
     },
     async shutdown(reason: SessionShutdownEvent["reason"] = "quit") {
       for (const handler of shutdowns) await handler({ type: "session_shutdown", reason }, {} as ExtensionContext);
@@ -105,7 +107,9 @@ test("production entry connects event-driven status widget and clears it for eve
     const rendered = () => widgets.at(-1)!({} as TUI, theme).render(120).join("\n");
     assert.match(rendered(), /idle/);
     const child = host.clients[0];
+    assert.ok(child);
     const stale = [...child.listeners][0];
+    assert.ok(stale);
     child.emit({ type: "agent_start" });
     assert.match(rendered(), /working/);
     await host.call(send);
@@ -135,8 +139,10 @@ test("production status UI is not accessed in RPC, JSON or print sessions", asyn
     t.after(() => host.shutdown());
     await host.start({ mode, get ui() { throw new Error("non-TUI UI access"); } } as unknown as ExtensionContext);
     await host.call(spawn);
-    host.clients[0].emit({ type: "agent_start" });
-    host.clients[0].emit(settled);
+    const child = host.clients[0];
+    assert.ok(child);
+    child.emit({ type: "agent_start" });
+    child.emit(settled);
     await nextTurn();
     assert.equal(host.deliveries.length, 1, "normal reports still work outside TUI");
     await host.shutdown();
@@ -149,6 +155,7 @@ test("root factory registers one direct subagent tool, object schema and asynchr
   assert.equal(host.shutdowns.length, 1);
   const [tool] = host.tools;
   assert.equal(host.tools.length, 1);
+  assert.ok(tool);
   assert.equal(tool.name, "subagent"); // Exact match for --exclude-tools subagent.
   assert.equal(tool.exposure ?? "direct", "direct");
   assert.equal(tool.defaultActive ?? true, true);
@@ -211,7 +218,9 @@ test("tool delegates parsed spawn/send inputs, defaults and invocation-time pare
   const current = { cwd: "/first", model: { provider: "first-p", id: "first-m" }, thinkingLevel: "low" as "low" | "high" };
   const first = await host.call({ ...spawn, thinking: "max" }, toolContext(current));
   assert.deepEqual(spawnCalls[0], [{ ...spawn, thinking: "max" }, current]);
-  const captured = spawnCalls[0][1] as ParentConfigSnapshot;
+  const [firstSpawnCall] = spawnCalls;
+  assert.ok(firstSpawnCall);
+  const captured = firstSpawnCall[1] as ParentConfigSnapshot;
   assert.notEqual(captured, current);
   assert.notEqual(captured.model, current.model);
   current.cwd = "/second";
@@ -267,7 +276,9 @@ test("spawn presentation config is fixed before awaiting acceptance, not read fr
   assert.deepEqual(result.details, { name: spawn.name, disposition: "started",
     config: { provider: "original-p", model: "original-m", thinking: "low" } });
   assert.deepEqual(result.content, [{ type: "text", text: JSON.stringify({ name: spawn.name, disposition: "started" }) }]);
-  assert.equal(host.clients[0].calls.some((call) => call.method === "getState"), false);
+  const [client] = host.clients;
+  assert.ok(client);
+  assert.equal(client.calls.some((call) => call.method === "getState"), false);
 });
 
 test("partial provider/model, invalid inputs, missing inherited configuration and RPC failures throw tool errors", async (t) => {
@@ -287,7 +298,9 @@ test("partial provider/model, invalid inputs, missing inherited configuration an
   await host.call(spawn);
   await assert.rejects(host.call(spawn), /already exists/);
   const error = new Error("Cannot submit a prompt while compaction is in progress");
-  const prompt = t.mock.method(host.clients[0], "prompt", async () => { throw error; });
+  const client = host.clients[0];
+  assert.ok(client);
+  const prompt = t.mock.method(client, "prompt", async () => { throw error; });
   await assert.rejects(host.call(send), (actual) => actual === error);
   assert.equal(prompt.mock.callCount(), 1);
 });
@@ -310,14 +323,18 @@ test("spawn/send return each RPC acceptance without waiting for settled or fetch
     const spawning = host.call(spawn).then((result) => { returned = true; return result; });
     await entered.promise;
     assert.equal(returned, false);
-    assert.deepEqual(prompt.mock.calls[0].arguments, [spawn.message]);
+    const [spawnCall] = prompt.mock.calls;
+    assert.ok(spawnCall);
+    assert.deepEqual(spawnCall.arguments, [spawn.message]);
     spawnAck.resolve(disposition);
     assert.deepEqual((await spawning).details, { name: spawn.name, disposition,
       config: { provider: "parent-p", model: "parent-m", thinking: "medium" } });
     let sent = false;
     const sending = host.call(send).then((result) => { sent = true; return result; });
     assert.equal(sent, false);
-    assert.deepEqual(prompt.mock.calls[1].arguments, [send.message, undefined, "steer"]);
+    const sendCall = prompt.mock.calls[1];
+    assert.ok(sendCall);
+    assert.deepEqual(sendCall.arguments, [send.message, undefined, "steer"]);
     sendAck.resolve(disposition);
     assert.deepEqual((await sending).details, { name: spawn.name, disposition });
     assert.equal(prompt.mock.callCount(), 2);
@@ -334,6 +351,7 @@ test("production pi.sendMessage binding uses exact report content and steer/trig
   await host.call(spawn);
   await host.call({ ...send, followUp: true });
   const client = host.clients[0];
+  assert.ok(client);
   for (const text of [" full result\n第二行 ", null]) {
     client.text = text;
     client.emit(settled);
@@ -354,12 +372,14 @@ for (const reason of ["quit", "reload", "new", "resume", "fork"] satisfies Sessi
     t.after(() => host.shutdown(reason));
     await host.call(spawn);
     const client = host.clients[0];
+    assert.ok(client);
     const text = deferred<string | null>();
     t.mock.method(client, "getLastAssistantText", () => text.promise);
     const stopEntered = deferred<void>();
     const stopped = deferred<void>();
     const stop = t.mock.method(client, "stop", () => { stopEntered.resolve(); return stopped.promise; });
     const stale = [...client.listeners][0];
+    assert.ok(stale);
     client.emit(settled);
     let closed = false;
     const shutdown = host.shutdown(reason).then(() => { closed = true; });
@@ -379,8 +399,10 @@ for (const reason of ["quit", "reload", "new", "resume", "fork"] satisfies Sessi
     await nextTurn();
     assert.equal(host.deliveries.length, 0);
     assert.equal(replacement.deliveries.length, 0);
-    replacement.clients[0].text = "new runtime result";
-    replacement.clients[0].emit(settled);
+    const replacementClient = replacement.clients[0];
+    assert.ok(replacementClient);
+    replacementClient.text = "new runtime result";
+    replacementClient.emit(settled);
     await nextTurn();
     assert.equal(replacement.deliveries.length, 1);
     await host.shutdown(reason);

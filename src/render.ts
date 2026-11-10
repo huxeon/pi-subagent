@@ -3,6 +3,7 @@ import type { MessageRenderer, Theme, ToolDefinition } from "@earendil-works/pi-
 import { Box, Container, Markdown, MouseRegion, Spacer, Text, stripTerminalSequences, truncateToWidth } from "@earendil-works/pi-tui";
 import type { Component } from "@earendil-works/pi-tui";
 import type { SubmissionDetails } from "./types.ts";
+import type { subagentParameters } from "./tools.ts";
 
 const TASK_PREVIEW_LINES = 3;
 const REPORT_PREVIEW_LINES = 8;
@@ -15,6 +16,7 @@ function displayText(value: string, multiline = false): string {
     .replace(/[\u2028\u2029]/g, multiline ? "\n" : " ");
 }
 function object(value: unknown): Record<string, unknown> {
+  // This assertion only enables indexing a checked object; no property types are trusted.
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 function string(value: unknown): string { return typeof value === "string" ? value : ""; }
@@ -46,8 +48,14 @@ function textOutput(content: { type: string; text?: string }[]): string {
   return content.filter((part) => part.type === "text").map((part) => part.text ?? "").join("\n");
 }
 
-export const subagentToolRenderers: Pick<ToolDefinition<any, SubmissionDetails | undefined>, "renderCall" | "renderResult"> = {
-  renderCall(args, theme, context) {
+type SubagentToolDefinition = ToolDefinition<typeof subagentParameters, SubmissionDetails | undefined, unknown>;
+type HistoricalRenderContext = Omit<Parameters<NonNullable<SubagentToolDefinition["renderCall"]>>[2], "args"> & {
+  args: unknown;
+};
+
+export const subagentToolRenderers = {
+  // Historical and partially streamed calls need not match the current schema.
+  renderCall(args: unknown, theme, context: HistoricalRenderContext) {
     const input = object(args);
     const parts = ["subagent", string(input.action), string(input.name)].filter(Boolean).map((part) => displayText(part));
     // Read the former mode only when rendering historical calls, never when executing new ones.
@@ -60,7 +68,7 @@ export const subagentToolRenderers: Pick<ToolDefinition<any, SubmissionDetails |
       TASK_PREVIEW_LINES, context.expanded, theme, context.keyHint));
     return bounded(component);
   },
-  renderResult(result, options, theme, context) {
+  renderResult(result, options, theme, context: HistoricalRenderContext) {
     const component = new Container();
     if (options.isPartial) return component; // No acceptance icon before the submission finishes.
     const output = textOutput(result.content);
@@ -78,7 +86,7 @@ export const subagentToolRenderers: Pick<ToolDefinition<any, SubmissionDetails |
       if (output) component.addChild(new Text(displayText(output, true), 0, 0));
       return bounded(component);
     }
-    let footer = `${theme.fg("success", "✓")} ${disposition[0].toUpperCase()}${disposition.slice(1)}`;
+    let footer = `${theme.fg("success", "✓")} ${disposition.charAt(0).toUpperCase()}${disposition.slice(1)}`;
     const config = object(details.config);
     if (object(context.args).action === "spawn" && [config.provider, config.model, config.thinking].every((part) => typeof part === "string")) {
       footer += ` ${displayText(`${config.provider}/${config.model}:${config.thinking}`)}`;
@@ -87,7 +95,7 @@ export const subagentToolRenderers: Pick<ToolDefinition<any, SubmissionDetails |
     component.addChild(new Text(footer, 0, 0));
     return bounded(component);
   },
-};
+} satisfies Pick<SubagentToolDefinition, "renderCall" | "renderResult">;
 
 // Pi rebuilds custom message components on theme/padding changes. Keep mouse expansion
 // per message without modifying persisted/model-facing data or retaining old messages.

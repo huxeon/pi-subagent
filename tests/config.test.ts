@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { parseSubagentInput, resolveChildConfig, THINKING_LEVELS } from "../src/config.ts";
 import type { ParentConfigSnapshot, SpawnInput } from "../src/types.ts";
 
-const spawn: SpawnInput = { action: "spawn", name: "Reviewer", message: "Review this code" };
+const spawn = { action: "spawn", name: "Reviewer", message: "Review this code" } as const satisfies SpawnInput;
 const parent: ParentConfigSnapshot = {
   cwd: "/workspace",
   model: { provider: "parent-provider", id: "parent-model" },
