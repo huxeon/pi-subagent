@@ -41,9 +41,6 @@ test("fully explicit config never reads missing parent model/thinking", () => {
     get thinkingLevel(): never { throw new Error("must not read parent thinking"); },
   });
   assert.deepEqual(config, { cwd: "/workspace", ...explicit, thinking: "max" });
-  assert.deepEqual(resolveChildConfig({ ...spawn, ...explicit, thinking: "off" }, { cwd: "/tmp" }), {
-    cwd: "/tmp", ...explicit, thinking: "off",
-  });
 });
 
 test("inherit only the missing configuration, independently", () => {

@@ -1,6 +1,6 @@
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import type { MessageRenderer, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { Box, Container, Markdown, Spacer, Text, stripTerminalSequences, truncateToWidth } from "@earendil-works/pi-tui";
+import { Box, Container, Markdown, MouseRegion, Spacer, Text, stripTerminalSequences, truncateToWidth } from "@earendil-works/pi-tui";
 import type { Component } from "@earendil-works/pi-tui";
 import type { SubmissionDetails } from "./types.ts";
 
@@ -23,18 +23,19 @@ function string(value: unknown): string { return typeof value === "string" ? val
 function bounded(component: Component): Component {
   return {
     render(width) { return width < 1 ? [] : component.render(width).map((line) => truncateToWidth(line, width, "...")); },
+    handleMouse(event) { return component.handleMouse?.(event); },
     invalidate() { component.invalidate(); },
   };
 }
 function preview(
-  component: Component, maxLines: number, expanded: boolean, theme: Theme,
+  component: Component, maxLines: number, expanded: boolean | (() => boolean), theme: Theme,
   keyHint: (id: "app.tools.expand", description: string) => string,
 ): Component {
   return {
     render(width) {
       if (width < 1) return [];
       const lines = component.render(width);
-      if (expanded || lines.length <= maxLines) return lines;
+      if ((typeof expanded === "function" ? expanded() : expanded) || lines.length <= maxLines) return lines;
       const hint = theme.fg("muted", `... (${lines.length - maxLines} more lines, ${keyHint("app.tools.expand", "to expand")})`);
       return [...lines.slice(0, maxLines), truncateToWidth(hint, width, "...")];
     },
@@ -88,16 +89,30 @@ export const subagentToolRenderers: Pick<ToolDefinition<any, SubmissionDetails |
   },
 };
 
+// Pi rebuilds custom message components on theme/padding changes. Keep mouse expansion
+// per message without modifying persisted/model-facing data or retaining old messages.
+const reportExpansions = new WeakMap<object, { globalExpanded: boolean; expanded: boolean }>();
+
 export const renderSubagentReport: MessageRenderer = (message, options, theme) => {
   const report = object(message.details);
   if (typeof report.name !== "string" || (report.text !== null && typeof report.text !== "string")) return undefined;
+  const previous = reportExpansions.get(message);
+  // A changed global keyboard expansion takes precedence over a local mouse toggle.
+  const expansion = previous?.globalExpanded === options.expanded ? previous :
+    { globalExpanded: options.expanded, expanded: options.expanded };
+  reportExpansions.set(message, expansion);
   const box = new Box(options.outputPad, 1, (line) => theme.bg("customMessageBg", line));
   box.addChild(new Text(theme.bold(`subagent report ${displayText(report.name)}`), 0, 0));
   const text = report.text === null ? "(No assistant text available.)" : report.text;
   if (text !== "") {
     box.addChild(new Spacer(1));
     box.addChild(preview(new Markdown(displayText(text, true), 0, 0, getMarkdownTheme()),
-      REPORT_PREVIEW_LINES, options.expanded, theme, options.keyHint));
+      REPORT_PREVIEW_LINES, () => expansion.expanded, theme, options.keyHint));
   }
-  return bounded(box);
+  return bounded(new MouseRegion(box, (event) => {
+    if (event.type !== "click" || event.button !== "left") return undefined;
+    expansion.expanded = !expansion.expanded;
+    box.invalidate();
+    return { handled: true };
+  }));
 };

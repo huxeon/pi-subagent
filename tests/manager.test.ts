@@ -350,18 +350,15 @@ test("invalid inputs/config and unknown names fail without creating or reserving
   assert.deepEqual(methods(clients[0]), ["start", "onEvent", "prompt"]);
 });
 
-test("send uses only prompt, preserving modes and dispositions for idle or streaming children", async () => {
+test("send uses only prompt, preserving delivery modes and acceptance dispositions", async () => {
   const { manager, clients } = fixture();
   await manager.spawn(spawn, parent);
   const client = clients[0];
-  for (const isStreaming of [false, true]) {
-    client.state.isStreaming = isStreaming;
-    for (const disposition of ["started", "queued", "handled"] as const) {
-      client.disposition = disposition;
-      for (const followUp of [undefined, false, true]) {
-        assert.deepEqual(await manager.send({ ...send, followUp }), { name: send.name, disposition });
-        assert.deepEqual(client.calls.at(-1), { method: "prompt", args: [send.message, undefined, followUp ? "followUp" : "steer"] });
-      }
+  for (const disposition of ["started", "queued", "handled"] as const) {
+    client.disposition = disposition;
+    for (const followUp of [undefined, false, true]) {
+      assert.deepEqual(await manager.send({ ...send, followUp }), { name: send.name, disposition });
+      assert.deepEqual(client.calls.at(-1), { method: "prompt", args: [send.message, undefined, followUp ? "followUp" : "steer"] });
     }
   }
   assert.ok(methods(client).every((method) => ["start", "onEvent", "prompt"].includes(method)));

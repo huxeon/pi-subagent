@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { CustomMessageComponent, initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import type { MessageRenderOptions, Theme } from "@earendil-works/pi-coding-agent";
-import type { Component, TUI } from "@earendil-works/pi-tui";
+import type { Component, TUI, TuiMouseEvent } from "@earendil-works/pi-tui";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { renderSubagentReport, subagentToolRenderers } from "../src/render.ts";
 import type { SubmissionDetails } from "../src/types.ts";
@@ -74,9 +74,10 @@ test("success footers show every capitalized disposition, and only spawn include
     assert.ok(spawned.render(100)[1].includes("\x1b[32m✓\x1b[0m"));
     const sent = renderResult(result, { expanded: false, isPartial: false }, theme, context({ action: "send" }));
     assert.deepEqual(plain(sent), ["", `✓ ${capitalized}`]);
-    assert.deepEqual(renderResult(result, { expanded: false, isPartial: true }, theme, context()).render(100), []);
     fits(spawned);
   }
+  assert.deepEqual(renderResult({ content: [], details: undefined },
+    { expanded: false, isPartial: true }, theme, context()).render(100), []);
 });
 
 test("errors show a cross and reason without inventing a disposition, including validation errors with no details", () => {
@@ -127,6 +128,65 @@ test("report previews cap body visual lines at eight, expand fully and respect o
   fits(collapsed);
 });
 
+function mouse(component: Component, changes: Partial<TuiMouseEvent> = {}, width = 100) {
+  const height = component.render(width).length;
+  return component.handleMouse?.({ type: "click", button: "left", x: 4, y: 2,
+    screenX: 4, screenY: 2, width, height, shift: false, alt: false, ctrl: false, ...changes });
+}
+
+test("report follows native tool click handling, including short/empty reports, without consuming wheel or drag", () => {
+  const component = renderSubagentReport(report("word ".repeat(300)), options, theme)!;
+  const before = plain(component);
+  for (const type of ["wheel", "drag", "press", "release", "move"] as const) {
+    assert.equal(mouse(component, { type }), undefined);
+  }
+  for (const button of ["right", "middle", "none"] as const) {
+    assert.equal(mouse(component, { button }), undefined);
+  }
+  assert.deepEqual(plain(component), before);
+  for (const text of [null, "", "short report"]) {
+    assert.deepEqual(mouse(renderSubagentReport(report(text), options, theme)!), { handled: true });
+  }
+  // Like native tools, clicking a currently untruncated result still toggles state.
+  const wrapped = renderSubagentReport(report("word ".repeat(30)), options, theme)!;
+  assert.deepEqual(mouse(wrapped), { handled: true });
+  assert.doesNotMatch(plain(wrapped, 12).join("\n"), /\.\.\. \(/);
+  fits(wrapped);
+  assert.ok(mouse(wrapped, {}, 12)?.handled);
+  assert.match(plain(wrapped, 12).join("\n"), /\.\.\. \(/);
+  fits(wrapped);
+});
+
+test("native report mouse expansion survives rebuilds, stays per message and yields to keyboard expansion changes", () => {
+  const message = report(Array.from({ length: 25 }, (_, i) => `Line-${i}`).join("\n\n"));
+  const original = structuredClone(message);
+  const custom = new CustomMessageComponent(message, renderSubagentReport);
+  const other = new CustomMessageComponent(report(message.details.text), renderSubagentReport);
+  assert.ok(mouse(custom)?.handled, "native container forwards clicks to the report");
+  assert.match(plain(custom).join("\n"), /Line-24/);
+  assert.doesNotMatch(plain(other).join("\n"), /Line-24/, "same child name must not share expansion");
+  initTheme("light", false);
+  try {
+    custom.invalidate();
+    custom.setOutputPad(4);
+    assert.match(plain(custom, 60).join("\n"), /Line-24/);
+    assert.ok(mouse(custom)?.handled);
+    custom.invalidate();
+    assert.doesNotMatch(plain(custom).join("\n"), /Line-24/);
+    custom.setExpanded(true);
+    assert.match(plain(custom).join("\n"), /Line-24/);
+    custom.setExpanded(false);
+    assert.doesNotMatch(plain(custom).join("\n"), /Line-24/);
+    mouse(custom);
+    custom.setExpanded(true);
+    custom.setExpanded(false);
+    assert.doesNotMatch(plain(custom).join("\n"), /Line-24/, "keyboard collapse overrides mouse expansion");
+  } finally {
+    initTheme("dark", false);
+  }
+  assert.deepEqual(message, original, "mouse and keyboard interaction must not mutate the message");
+});
+
 test("null and empty reports remain distinct; missing or invalid details fall back to Pi", () => {
   assert.match(plain(renderSubagentReport(report(null), options, theme)!).join("\n"), /No assistant text available/);
   const empty = plain(renderSubagentReport(report(""), options, theme)!).join("\n");
@@ -135,6 +195,8 @@ test("null and empty reports remain distinct; missing or invalid details fall ba
   for (const details of [undefined, null, {}, { name: "r" }, { name: 1, text: "result" }, { name: "r", text: [] }]) {
     assert.equal(renderSubagentReport({ ...report("result"), details }, options, theme), undefined);
   }
+  const historical = new CustomMessageComponent({ ...report("old content"), details: undefined }, renderSubagentReport);
+  assert.match(plain(historical).join("\n"), /old content/);
 });
 
 test("display sanitization handles multiline names, ANSI, OSC, CJK and emoji without mutating input", () => {
@@ -153,7 +215,7 @@ test("display sanitization handles multiline names, ANSI, OSC, CJK and emoji wit
   fits(rendered);
 });
 
-test("native Pi tool/message components use the renderers for progress, errors, expansion and theme invalidation", () => {
+test("native Pi tool component uses the renderers for progress, errors and invalidation", () => {
   const ui = { requestRender() {} } as TUI;
   const tool = new ToolExecutionComponent("subagent", "call", spawn, { outputPad: 2 }, subagentToolRenderers, ui, "/work");
   assert.match(plain(tool).join("\n"), /subagent spawn reviewer/);
@@ -162,20 +224,6 @@ test("native Pi tool/message components use the renderers for progress, errors, 
   assert.match(plain(tool).join("\n"), /✓ Started provider\/model:high/);
   tool.updateResult({ content: [{ type: "text", text: "compaction in progress" }], isError: true });
   assert.match(plain(tool).join("\n"), /✗ compaction in progress/);
-  tool.setExpanded(true);
   tool.invalidate();
   assert.match(plain(tool).join("\n"), /✗ compaction in progress/);
-
-  const message = report(Array.from({ length: 20 }, (_, i) => `part-${i}`).join("\n\n"));
-  const custom = new CustomMessageComponent(message, renderSubagentReport);
-  assert.match(plain(custom).join("\n"), /subagent report reviewer/);
-  assert.doesNotMatch(plain(custom).join("\n"), /part-19/);
-  custom.setExpanded(true);
-  assert.match(plain(custom).join("\n"), /part-19/);
-  initTheme("light", false);
-  custom.invalidate();
-  assert.match(plain(custom).join("\n"), /part-19/);
-  initTheme("dark", false);
-  const oldMessage = new CustomMessageComponent({ ...report("old content"), details: undefined }, renderSubagentReport);
-  assert.match(plain(oldMessage).join("\n"), /old content/);
 });
